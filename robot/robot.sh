@@ -21,10 +21,10 @@ export ${DSO_ENV}=${PWD}/../../../build/_dist/${HOST}-${ARCH}/${BUILD}/lib
 
 RUN_DIR=${PWD}
 
-if [ ! -e ${RUN_DIR}/elacarriertest ]; then
-    echo "Error: elacarriertest not available."
+if [ ! -e ${RUN_DIR}/elarobot ]; then
+    echo "Error: elarobot not available."
     exit 1
 fi
 
-cd ${RUN_DIR} && ./elacarriertest $*
+cd ${RUN_DIR} && ./elarobot $*
 

@@ -1,0 +1,39 @@
+2018-05-10 11:20:45 - INFO    : Carrier: Carrier node created.
+2018-05-10 11:23:03 - INFO    : Carrier: Carrier node created.
+2018-05-10 12:04:14 - INFO    : Carrier: Carrier node created.
+2018-05-10 12:05:23 - INFO    : Carrier: Carrier node created.
+2018-05-10 12:08:50 - INFO    : Carrier: Carrier node created.
+2018-05-10 14:06:20 - INFO    : Carrier: Carrier node created.
+2018-05-10 14:08:06 - INFO    : Carrier: Carrier node killed.
+2018-05-10 14:08:06 - INFO    : Carrier: Carrier node created.
+2018-05-10 14:09:03 - INFO    : Carrier: Carrier node created.
+2018-05-10 14:10:10 - INFO    : Carrier: Carrier node killed.
+2018-05-10 14:10:11 - INFO    : Carrier: Carrier node created.
+2018-05-10 14:14:04 - INFO    : Carrier: Carrier node killed.
+2018-05-10 14:14:05 - INFO    : Carrier: Carrier node created.
+2018-05-10 14:14:10 - INFO    : Carrier: Carrier node killed.
+2018-05-10 14:14:10 - INFO    : Carrier: Carrier node created.
+2018-05-10 14:14:27 - INFO    : Carrier: Carrier node created.
+2018-05-10 14:18:08 - INFO    : Carrier: Carrier node created.
+2018-05-10 14:26:05 - INFO    : Carrier: Carrier node killed.
+2018-05-10 14:26:05 - INFO    : Carrier: Carrier node created.
+2018-05-10 14:26:59 - INFO    : Carrier: Carrier node created.
+2018-05-10 14:35:08 - INFO    : Carrier: Carrier node created.
+2018-05-10 14:37:58 - INFO    : Carrier: Carrier node created.
+2018-05-10 14:54:15 - INFO    : Carrier: Carrier node created.
+2018-05-10 15:14:50 - INFO    : Carrier: Carrier node created.
+2018-05-10 15:28:18 - INFO    : Carrier: Carrier node created.
+2018-05-10 16:58:45 - INFO    : Carrier: Carrier node killed.
+2018-05-10 16:58:45 - INFO    : Carrier: Carrier node created.
+2018-05-11 12:49:40 - INFO    : Carrier: Carrier node created.
+2018-05-11 13:02:43 - ERROR   : Stream: 1 ICE handler negotiation failed: Too many objects of the specified type (PJ_ETOOMANY).
+2018-05-11 13:06:30 - ERROR   : Stream: 2 ICE handler negotiation failed: Too many objects of the specified type (PJ_ETOOMANY).
+2018-05-11 13:10:45 - INFO    : Carrier: Carrier node killed.
+2018-05-11 13:10:45 - INFO    : Carrier: Carrier node created.
+2018-05-11 13:10:51 - INFO    : Carrier: Carrier node created.
+2018-05-11 13:13:17 - ERROR   : Stream: 1 ICE handler negotiation failed: Too many objects of the specified type (PJ_ETOOMANY).
+2018-05-11 13:39:56 - WARNING : Stream: 1 ICE handler already prepared.
+2018-05-11 13:41:44 - INFO    : Carrier: Carrier node created.
+2018-05-11 13:46:50 - INFO    : Carrier: Carrier node created.
+2018-05-11 13:48:15 - ERROR   : Stream: 1 ICE handler negotiation failed: Too many objects of the specified type (PJ_ETOOMANY).
+2018-05-11 16:03:28 - INFO    : Carrier: Carrier node created.

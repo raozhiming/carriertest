@@ -16,13 +16,13 @@ ifeq (, $(findstring $(HOST), Darwin iOS))
 	LIBS := $(LIBS) -lpthread
 endif
 
-OBJS = shell.o config.o timedata.o
+OBJS = robot.o config.o
 
 .PHONY: all clean install
 
-all: elacarriertest
+all: elarobot
 
-elacarriertest: $(OBJS)
+elarobot: $(OBJS)
 	$(CC) -o $@ $(OBJS) $(LDFLAGS) -L$(INSTALL_LIBRARY_PATH) $(LIBS)
 
 .c.o:
@@ -31,5 +31,5 @@ elacarriertest: $(OBJS)
 install: all
 
 clean:
-	rm -rf elacarriertest *.o
+	rm -rf elarobot *.o
 

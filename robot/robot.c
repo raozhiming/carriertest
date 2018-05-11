@@ -50,9 +50,7 @@
 #include <ela_carrier.h>
 #include <ela_session.h>
 
-#include "cond.h"
 #include "config.h"
-#include "timedata.h"
 
 #define NUMBER_OF_HISTORY       256
 
@@ -91,25 +89,18 @@ static struct {
 } session_ctx;
 
 static struct {
-    struct timeval start_stamp;
-    struct timeval middle_stamp;
-    struct timeval end_stamp;
-} friendOnline, addFriendTime;
-
-static Condition DEFINE_COND(friendOnLine_cond);
-char testFriendId[ELA_MAX_ID_LEN] = {0};
+    struct timeval createNode_stamp;
+    struct timeval connect2Carrier_stamp;
+    struct timeval friendOnline_stamp;
+} friendOnline;
 
 int loopcount = 0;
-bool bQuit = true;
 bool bOnlineTest = false;
 bool bSessionTest = false;
-bool bAddFriendTest = false;
 int test_loopcnt = 0;
-TimeData testDataOnLine = {0};
-TimeData testDataFriendOnLine = {0};
-TimeData testDataAddFriend = {0};
 sem_t session_status;
 
+bool gFriendRequest = false;
 bool gServerAutoTest = true;
 
 static int stream_add(ElaCarrier *w, int argc, char *argv[]);
@@ -429,6 +420,23 @@ static void output(const char *format, ...)
     pthread_mutex_unlock(&screen_lock);
 
     va_end(args);
+}
+#define TIME_FORMAT     "%Y-%m-%d %H:%M:%S"
+static void outputEx(const char *format, ...)
+{
+    char timestr[20];
+    char buf[1024];
+    time_t cur = time(NULL);
+
+    strftime(timestr, 20, TIME_FORMAT, localtime(&cur));
+
+    va_list args;
+    va_start(args, format);
+    vsnprintf(buf, sizeof(buf), format, args);
+    va_end(args);
+    buf[1023] = 0;
+
+    output("%s : %s\n", timestr, buf);
 }
 
 static void clear_screen(ElaCarrier *w, int argc, char *argv[])
@@ -815,7 +823,7 @@ static void friend_removed_callback(ElaCarrier *w, const char *friendid,
     output("Friend %s removed!\n", friendid);
 }
 
-static int send_message(ElaCarrier *w, int argc, char *argv[])
+static void send_message(ElaCarrier *w, int argc, char *argv[])
 {
     int rc;
 
@@ -829,14 +837,13 @@ static int send_message(ElaCarrier *w, int argc, char *argv[])
         output("Send message success.\n");
     else
         output("Send message failed(0x%x).\n", ela_get_error());
-    return rc;
 }
 
 static void invite_response_callback(ElaCarrier *w, const char *friendid,
                                      int status, const char *reason,
                                      const char *data, size_t len, void *context)
 {
-    output("Got invite response from %s. ", friendid);
+    outputEx("Got invite response from %s. ", friendid);
     if (status == 0) {
         output("message within response: %.*s\n", (int)len, data);
     } else {
@@ -904,7 +911,7 @@ static void session_request_callback(ElaCarrier *w, const char *from,
     session_ctx.remote_sdp[len] = 0;
     session_ctx.sdp_len = len;
 
-    output("Session request from[%s] with SDP:\n%s.\n", from, session_ctx.remote_sdp);
+    outputEx("Session request from[%s] with SDP:\n%s.\n", from, session_ctx.remote_sdp);
     output("Reply use following commands:\n");
     output("  sreply refuse [reason]\n");
     output("OR:\n");
@@ -912,7 +919,7 @@ static void session_request_callback(ElaCarrier *w, const char *from,
     output("  2. sadd [plain] [reliable] [multiplexing] [portforwarding]\n");
     output("  3. sreply ok\n");
     if (gServerAutoTest) {
-        const char *args_addstream[2] = {"", "plain"};
+        char *args_addstream[2] = {"", "plain"};
         char *args_reply[2] = {"", "ok"};
 
         session_ctx.ws = ela_session_new(w, from);
@@ -921,6 +928,7 @@ static void session_request_callback(ElaCarrier *w, const char *from,
         } else {
             output("Create session successfully.\n");
         }
+        usleep(1000);
         session_ctx.unchanged_streams = 0;
         int streamId = stream_add(w, 2, args_addstream);//close streamid
         output("streamId = %d.\n", streamId);
@@ -936,7 +944,7 @@ static void session_request_complete_callback(ElaSession *ws, int status,
 {
     int rc;
 
-    output("Session complete, status: %d, reason: %s\n", status,
+    outputEx("Session complete, status: %d, reason: %s\n", status,
            reason ? reason : "null");
 
     if (status != 0)
@@ -1079,12 +1087,6 @@ void on_channel_resume(ElaSession *ws, int stream, int channel, void *context)
 static void session_init(ElaCarrier *w, int argc, char *argv[])
 {
     int rc;
-
-    // if (argc != 1) {
-    //     output("Invalid command syntax.\n");
-    //     return;
-    // }
-
     rc = ela_session_init(w, session_request_callback, NULL);
     if (rc < 0) {
         output("Session initialized failed.\n");
@@ -1319,10 +1321,8 @@ static void *bulk_write_thread(void *arg)
     for (i = 0; i < args->packet_count; i++) {
         size_t total = args->packet_size;
         size_t sent = 0;
-        output(" %d\n", i);
 
         do {
-            output("^");
             rc = ela_stream_write(session_ctx.ws, args->stream,
                                       packet + sent, total - sent);
             if (rc == 0) {
@@ -1601,194 +1601,6 @@ static void portforwarding_close(ElaCarrier *w, int argc, char *argv[])
 
 static void help(ElaCarrier *w, int argc, char *argv[]);
 
-//
-static void online_test(ElaCarrier *w, int argc, char *argv[])
-{
-    if (argc != 2) {
-        output("Invalid command syntax.\n");
-        return;
-    }
-
-    test_loopcnt = atoi(argv[1]);
-    if (test_loopcnt < 0) test_loopcnt = 1;
-
-    bQuit = false;
-    bOnlineTest = true;
-    ela_kill(w);
-}
-
-struct session_test_args {
-    ElaCarrier* w;
-    int type;
-    char userid[ELA_MAX_ID_LEN + 1];
-};
-struct session_test_args sessiontest_args;
-
-static void *session_test_thread(void *arg)
-{
-    int i;
-    struct session_test_args *args = (struct session_test_args *)arg;
-
-    output("Begin session_test_thread");
-
-    char *args_addstream[2] = {"", "plain"};
-    char stream[12] = {""};
-    char *args_senddata[4] = {"", stream, "2048", "1000"};
-
-    // gettimeofday(&start, NULL);
-    for (i = 0; i < test_loopcnt; i++) {
-        session_ctx.ws = ela_session_new(args->w, args->userid);
-        if (!session_ctx.ws) {
-            output("Create session failed. userid:%s\n", args->userid);
-        } else {
-            output("Create session successfully.\n");
-        }
-        session_ctx.unchanged_streams = 0;
-
-        //
-        int streamId = stream_add(args->w, 2, args_addstream);
-        if (-1 == streamId) {
-            output("stream_add failed.\n");
-            ela_session_close(session_ctx.ws);
-            session_ctx.ws = NULL;
-            continue;
-        }
-        output("Line %d.streamId = %d\n", __LINE__, streamId);
-        sprintf(stream, "%d", streamId);
-        output("wait stream initialized sem_wait\n");
-        sem_wait(&session_status);
-
-        //
-        session_request(args->w, 1, NULL);
-        output("sem_wait\n");
-        sem_wait(&session_status);
-        output("Line %d.\n", __LINE__);
-
-        //
-        stream_bulk_write(args->w, 4, args_senddata);
-        output("sem_wait\n");
-        sem_wait(&session_status);
-
-    }
-
-    output("\nFinish! session_test_thread\n");
-    bSessionTest = false;
-
-    return NULL;
-}
-
-
-static void session_test(ElaCarrier *w, int argc, char *argv[])
-{
-    if (argc != 4) {
-        output("Invalid command syntax.\n");
-        return;
-    }
-
-    test_loopcnt = atoi(argv[3]);
-    if (test_loopcnt < 0) test_loopcnt = 1;
-    bSessionTest = true;
-
-    sessiontest_args.w = w;
-    sessiontest_args.type = atoi(argv[1]);
-    strcpy(sessiontest_args.userid, argv[2]);
-
-    pthread_attr_t attr;
-    pthread_t th;
-
-    pthread_attr_init(&attr);
-    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-    pthread_create(&th, &attr, session_test_thread, &sessiontest_args);
-    pthread_attr_destroy(&attr);
-}
-
-struct addfriend_test_args {
-    ElaCarrier* w;
-    char addressID[ELA_MAX_ADDRESS_LEN + 1];
-};
-struct addfriend_test_args addfriendtest_args;
-
-static void addfriend_test_thread(void *arg)
-{
-    struct addfriend_test_args *args = (struct addfriendtest_args *)arg;
-
-    char *friendAddress;
-
-    friendAddress = args->addressID;
-    if (!ela_address_is_valid(friendAddress)) {
-        output("address is Invalid. %s\n", friendAddress);
-        return;
-    }
-
-    struct timeval startTime, endTime;
-    gettimeofday(&startTime, NULL);
-
-    ela_get_id_by_address(friendAddress, testFriendId, ELA_MAX_ID_LEN + 1);
-    output("testFriendId :%s\n", testFriendId);
-
-    char *removeArgs[2] = {"", testFriendId};
-    char *addArgs[3] = {"", friendAddress, "auto-reply"};
-    char *msgArgs[3] = {"", testFriendId, "remove"};
-
-    bAddFriendTest = true;
-
-    int i, rc, wait_times, timeuse;
-    for (i = 0; i < test_loopcnt; i++) {
-        output("loop :%d\n", i);
-        if (ela_is_friend(args->w, testFriendId)) {
-            wait_times = 0;
-            do {
-                rc = send_message(args->w, 3, msgArgs);
-                sleep(1);
-            } while ((0!=rc) && (wait_times++ < 60));
-            friend_remove(args->w, 2, removeArgs);
-            sleep(3);
-        }
-        //wait for callback
-        gettimeofday(&addFriendTime.start_stamp, NULL);
-        friend_add(args->w, 3, addArgs);
-        output("wait for callback (cond_wait)\n");
-        cond_wait(&friendOnLine_cond);
-        gettimeofday(&addFriendTime.end_stamp, NULL);
-        timeuse = 1000 * (addFriendTime.end_stamp.tv_sec -addFriendTime.start_stamp.tv_sec) + (addFriendTime.end_stamp.tv_usec - addFriendTime.start_stamp.tv_usec) / 1000;
-        output("addfrind: %d ms\n", timeuse);
-        addData(&testDataAddFriend, timeuse);
-    }
-
-    testFriendId[0] = 0;
-    bAddFriendTest = false;
-
-    OutputData(&testDataAddFriend, "testDataAddFriend.txt");
-    Dispose(&testDataAddFriend);
-
-    gettimeofday(&endTime, NULL);
-    timeuse = endTime.tv_sec -startTime.tv_sec;
-    output("addfriend_test End, ElapseTime: %ds\n", timeuse);
-}
-
-static void addfriend_test(ElaCarrier *w, int argc, char *argv[])
-{
-    if (argc != 3) {
-        output("Invalid command syntax.\n");
-        return;
-    }
-
-    test_loopcnt = atoi(argv[2]);
-    if (test_loopcnt < 0) test_loopcnt = 1;
-    bAddFriendTest = true;
-
-    addfriendtest_args.w = w;
-    strcpy(addfriendtest_args.addressID, argv[1]);
-
-    pthread_attr_t attr;
-    pthread_t th;
-
-    pthread_attr_init(&attr);
-    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-    pthread_create(&th, &attr, addfriend_test_thread, &addfriendtest_args);
-    pthread_attr_destroy(&attr);
-}
-
 struct command {
     const char *cmd;
     void (*function)(ElaCarrier *w, int argc, char *argv[]);
@@ -1836,9 +1648,6 @@ struct command {
     { "spfclose",   portforwarding_close,   "spfclose stream pfid" },
     { "scleanup",   session_cleanup,        "scleanup" },
     { "kill",       kill_carrier,           "kill" },
-    { "onlinetest", online_test,            "onlinetest loopcount" },
-    { "sessiontest", session_test,          "sessiontest type userid loopcount" },
-    { "addfriendtest", addfriend_test,      "addfriendtest address loopcount" },
     { NULL }
 };
 
@@ -2025,16 +1834,14 @@ static void connection_callback(ElaCarrier *w, ElaConnectionStatus status,
 {
     switch (status) {
     case ElaConnectionStatus_Connected:
-        gettimeofday(&friendOnline.middle_stamp, NULL);
-        int timeuse = 1000 * (friendOnline.middle_stamp.tv_sec -friendOnline.start_stamp.tv_sec) + (friendOnline.middle_stamp.tv_usec - friendOnline.start_stamp.tv_usec) / 1000;
-        addData(&testDataOnLine, timeuse);
+        gettimeofday(&friendOnline.connect2Carrier_stamp, NULL);
+        int timeuse = 1000 * (friendOnline.connect2Carrier_stamp.tv_sec -friendOnline.createNode_stamp.tv_sec) + (friendOnline.connect2Carrier_stamp.tv_usec - friendOnline.createNode_stamp.tv_usec) / 1000;
         output("Connected to carrier network: %d ms\n",timeuse);
-        // OutputData(&testDataOnLine, "testDataOnLine.txt");
         break;
 
     case ElaConnectionStatus_Disconnected:
-        output("Disconnect from carrier network.\n");
-        gettimeofday(&friendOnline.start_stamp, NULL);
+        gettimeofday(&friendOnline.createNode_stamp, NULL);
+        outputEx("Disconnect from carrier network.\n");
         break;
 
     default:
@@ -2054,27 +1861,9 @@ static void friend_connection_callback(ElaCarrier *w, const char *friendid,
 {
     switch (status) {
     case ElaConnectionStatus_Connected:
-
-        gettimeofday(&friendOnline.end_stamp, NULL);
-        int timeuse = 1000 * (friendOnline.end_stamp.tv_sec -friendOnline.middle_stamp.tv_sec) + (friendOnline.end_stamp.tv_usec - friendOnline.middle_stamp.tv_usec) / 1000;
-        output("Friend[%s] connection changed to be online %d ms\n", friendid, timeuse);
-        addData(&testDataFriendOnLine, timeuse);
-        if (bOnlineTest) {
-            if (loopcount >= test_loopcnt) {
-                OutputData(&testDataOnLine, "testDataOnLine.txt");
-                OutputData(&testDataFriendOnLine, "testDataFriendOnLine.txt");
-                Dispose(&testDataOnLine);
-                Dispose(&testDataFriendOnLine);
-                bOnlineTest = false;
-            }
-            ela_kill(w);
-        }
-
-        if (bAddFriendTest && (0 == strcmp(friendid, testFriendId))) {
-            output("friend_connection_callback cond_signal\n");
-            cond_signal(&friendOnLine_cond);
-        }
-
+        gettimeofday(&friendOnline.friendOnline_stamp, NULL);
+        int timeuse = 1000 * (friendOnline.friendOnline_stamp.tv_sec -friendOnline.connect2Carrier_stamp.tv_sec) + (friendOnline.friendOnline_stamp.tv_usec - friendOnline.connect2Carrier_stamp.tv_usec) / 1000;
+        outputEx("Friend[%s] connection changed to be online %d ms\n", friendid, timeuse);
         break;
 
     case ElaConnectionStatus_Disconnected:
@@ -2102,17 +1891,35 @@ static void friend_request_callback(ElaCarrier *w, const char *userid,
                                     const ElaUserInfo *info, const char *hello,
                                     void *context)
 {
-    output("Friend request from user[%s] with HELLO: %s.\n",
+    output("Friend request from user[%s] with : %s.\n",
            *info->name ? info->name : userid, hello);
-    output("Reply use following commands:\n");
-    output("  faccept %s\n", userid);
+    output("Reply use following commands:\n  faccept %s\n", userid);
+
+    if (strcmp(hello, "auto-reply") == 0) {
+        int rc;
+        rc = ela_accept_friend(w, userid);
+        if (rc < 0) {
+            output("Accept friend request from %s error (0x%x)\n",
+                    userid, ela_get_error());
+        } else {
+            output("Accept friend request from %s success\n", userid);
+        }
+    }
+}
+
+ParseMsg(ElaCarrier *w, const char *from, const char *msg, size_t len)
+{
+    if (strcmp(msg, "remove") == 0) {//remove friend
+        char *cmdArgs[2] = {"", from};
+        friend_remove(w, 2, cmdArgs);
+    }
 }
 
 static void message_callback(ElaCarrier *w, const char *from,
                              const char *msg, size_t len, void *context)
 {
     output("Message from friend[%s]: %.*s\n", from, (int)len, msg);
-    //parsemsg
+    ParseMsg(w, from, msg, len);
 }
 
 static void invite_request_callback(ElaCarrier *w, const char *from,
@@ -2268,7 +2075,7 @@ int main(int argc, char *argv[])
 
     do {
         w = ela_new(&opts, &callbacks, NULL);
-        gettimeofday(&friendOnline.start_stamp, NULL);
+        gettimeofday(&friendOnline.createNode_stamp, NULL);
 
         // deref(cfg);
         // free(opts.bootstraps);
@@ -2289,7 +2096,12 @@ int main(int argc, char *argv[])
 
         session_init(w, 1, NULL);
 
-        bQuit = true;
+        //
+        if (!ela_address_is_valid("KcPRVCGKWdt49w9bpJFRyXySnCxNvDAibyn23rau42fVqNehc4c")) {
+            output("address is Invalid, pls check args.\n");
+            return;
+        }
+
         rc = ela_run(w, 10);
         if (rc != 0) {
             output("Error start carrier loop: 0x%x\n", ela_get_error());
@@ -2300,11 +2112,7 @@ int main(int argc, char *argv[])
             goto quit;
         }
         output("loopcount: %d\n", loopcount);
-        if (loopcount++ > test_loopcnt) {
-            loopcount = 0;
-            bQuit = true;
-        }
-    } while (!bQuit);
+    } while (true);
 
 quit:
     cleanup_screen();
