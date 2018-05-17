@@ -52,6 +52,22 @@ static inline void cond_wait(Condition *cond)
     pthread_mutex_unlock(&cond->mutex);
 }
 
+static inline void cond_trywait(Condition *cond, int ms)
+{
+    struct timeval now;
+    struct timespec outtime;
+    gettimeofday(&now, NULL);
+    outtime.tv_sec = now.tv_sec + ms * 1000;
+    outtime.tv_nsec = now.tv_usec * 1000;
+
+    pthread_mutex_lock(&cond->mutex);
+    if (cond->signaled <= 0) {
+        pthread_cond_timedwait(&cond->cond, &cond->mutex, &outtime);
+    }
+    cond->signaled--;
+    pthread_mutex_unlock(&cond->mutex);
+}
+
 static inline void cond_signal(Condition *cond)
 {
     pthread_mutex_lock(&cond->mutex);

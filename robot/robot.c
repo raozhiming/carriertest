@@ -31,50 +31,18 @@
 #include <getopt.h>
 #include <limits.h>
 #include <inttypes.h>
+#include <pthread.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <curses.h>
 #include <sys/select.h>
 #include <semaphore.h>
 
-#ifdef __linux__
-#define __USE_GNU
-
-#include <pthread.h>
-
-#define PTHREAD_RECURSIVE_MUTEX_INITIALIZER PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP
-#else
-#include <pthread.h>
-#endif
-
 #include <ela_carrier.h>
 #include <ela_session.h>
 
 #include "config.h"
-
-#define NUMBER_OF_HISTORY       256
-
-static char default_data_location[PATH_MAX];
-
-static const char *history_filename = ".elashell.history";
-
-static char *cmd_history[NUMBER_OF_HISTORY];
-static int cmd_history_last = 0;
-static int cmd_history_cursor = 0;
-static int cmd_cursor_dir = 1;
-
-WINDOW *output_win_border, *output_win;
-WINDOW *log_win_border, *log_win;
-WINDOW *cmd_win_border, *cmd_win;
-
-pthread_mutex_t screen_lock = PTHREAD_RECURSIVE_MUTEX_INITIALIZER;
-
-#define OUTPUT_WIN  1
-#define LOG_WIN     2
-#define CMD_WIN     3
-
-static int OUTPUT_COLS;
-static int OUTPUT_LINES = 4;
+#include "screen.h"
 
 static struct {
     ElaSession *ws;
@@ -99,6 +67,7 @@ bool bOnlineTest = false;
 bool bSessionTest = false;
 int test_loopcnt = 0;
 sem_t session_status;
+int streamId = 0;
 
 bool gFriendRequest = false;
 bool gServerAutoTest = true;
@@ -106,365 +75,12 @@ bool gServerAutoTest = true;
 static int stream_add(ElaCarrier *w, int argc, char *argv[]);
 static void session_reply_request(ElaCarrier *w, int argc, char *argv[]);
 
-static void get_layout(int win, int *w, int *h, int *x, int *y)
-{
-    if (win == OUTPUT_WIN) {
-        if (COLS < 100) {
-            *x = 0;
-            *y = LINES - (LINES -OUTPUT_LINES) / 2 - OUTPUT_LINES;
-
-            *w = COLS;
-            *h = (LINES -OUTPUT_LINES) / 2;
-        } else {
-            *x = 0;
-            *y = 0;
-
-            *w = (COLS - 1) / 2;
-            *h = LINES - OUTPUT_LINES;
-        }
-
-        OUTPUT_COLS = *w -2;
-    } else if (win == LOG_WIN) {
-        if (COLS < 100) {
-            *x = 0;
-            *y = 0;
-
-            *w = COLS;
-            *h = LINES - (LINES -OUTPUT_LINES) / 2 - OUTPUT_LINES;
-        } else {
-            *x = COLS - (COLS / 2);
-            *y = 0;
-
-            *w = (COLS - 1) / 2;
-            *h = LINES - OUTPUT_LINES;
-        }
-    } else if (win == CMD_WIN) {
-        if (COLS < 100) {
-            *x = 0;
-            *y = LINES - OUTPUT_LINES;
-
-            *w = COLS;
-            *h = OUTPUT_LINES;
-        } else {
-            *x = 0;
-            *y = LINES - OUTPUT_LINES;
-
-            *w = COLS;
-            *h = OUTPUT_LINES;
-        }
-    }
-}
-
-static void handle_winch(int sig)
-{
-    int w, h, x, y;
-
-    endwin();
-
-    if (LINES < 20 || COLS < 80) {
-        printf("Terminal size too small!\n");
-        exit(-1);
-    }
-
-    refresh();
-    clear();
-
-    wresize(stdscr, LINES, COLS);
-
-    get_layout(OUTPUT_WIN, &w, &h, &x, &y);
-
-    wresize(output_win_border, h, w);
-    mvwin(output_win_border, y, x);
-    box(output_win_border, 0, 0);
-    mvwprintw(output_win_border, 0, 4, "Output");
-
-    wresize(output_win, h-2, w-2);
-    mvwin(output_win, y+1, x+1);
-
-    get_layout(LOG_WIN, &w, &h, &x, &y);
-
-    wresize(log_win_border, h, w);
-    mvwin(log_win_border, y, x);
-    box(log_win_border, 0, 0);
-    mvwprintw(log_win_border, 0, 4, "Log");
-
-    wresize(log_win, h-2, w-2);
-    mvwin(log_win, y+1,  x+1);
-
-    get_layout(CMD_WIN, &w, &h, &x, &y);
-
-    wresize(cmd_win_border, h, w);
-    mvwin(cmd_win_border, y, x);
-    box(cmd_win_border, 0, 0);
-    mvwprintw(cmd_win_border, 0, 4, "Command");
-
-    wresize(cmd_win, h-2, w-2);
-    mvwin(cmd_win,  y+1,  x+1);
-
-    clear();
-    refresh();
-
-    wrefresh(output_win_border);
-    wrefresh(output_win);
-
-    wrefresh(log_win_border);
-    wrefresh(log_win);
-
-    wrefresh(cmd_win_border);
-    wrefresh(cmd_win);
-}
-
-static void init_screen(void)
-{
-    int w, h, x, y;
-
-    initscr();
-
-    if (LINES < 20 || COLS < 80) {
-        printf("Terminal size too small!\n");
-        endwin();
-        exit(-1);
-    }
-
-    noecho();
-    nodelay(stdscr, TRUE);
-    refresh();
-
-    get_layout(OUTPUT_WIN, &w, &h, &x, &y);
-
-    output_win_border = newwin(h, w, y, x);
-    box(output_win_border, 0, 0);
-    mvwprintw(output_win_border, 0, 4, "Output");
-    wrefresh(output_win_border);
-
-    output_win = newwin(h-2, w-2, y+1, x+1);
-    scrollok(output_win, TRUE);
-    wrefresh(output_win);
-
-    get_layout(LOG_WIN, &w, &h, &x, &y);
-
-    log_win_border = newwin(h, w, y, x);
-    box(log_win_border, 0, 0);
-    mvwprintw(log_win_border, 0, 4, "Log");
-    wrefresh(log_win_border);
-
-    log_win = newwin(h-2, w-2, y+1,  x+1);
-    scrollok(log_win, TRUE);
-    wrefresh(log_win);
-
-    get_layout(CMD_WIN, &w, &h, &x, &y);
-
-    cmd_win_border = newwin(h, w, y, x);
-    box(cmd_win_border, 0, 0);
-    mvwprintw(cmd_win_border, 0, 4, "Command");
-    wrefresh(cmd_win_border);
-
-    cmd_win = newwin(h-2, w-2, y+1,  x+1);
-    scrollok(cmd_win, true);
-    waddstr(cmd_win, "# ");
-    wrefresh(cmd_win);
-
-    struct sigaction sa;
-    memset(&sa, 0, sizeof(struct sigaction));
-    sa.sa_handler = handle_winch;
-    sigaction(SIGWINCH, &sa, NULL);
-}
-
-static void cleanup_screen(void)
-{
-    endwin();
-
-    delwin(output_win_border);
-    delwin(output_win);
-
-    delwin(log_win_border);
-    delwin(log_win);
-
-    delwin(cmd_win_border);
-    delwin(cmd_win);
-}
-
-static void history_load(void)
-{
-    int i = 0;
-    char filename[PATH_MAX];
-    FILE *fp;
-    char line[1024];
-    char *p;
-
-    sprintf(filename, "%s/%s", default_data_location, history_filename);
-
-    fp = fopen(filename, "r");
-    if (!fp)
-        return;
-
-    while (fgets(line, sizeof(line), fp)) {
-        // Trim trailing spaces;
-        for (p = line + strlen(line) - 1; p >= line && isspace(*p); p--);
-        *(++p) = 0;
-
-        // Trim leading spaces;
-        for (p = line; *p && isspace(*p); p++);
-
-        if (strlen(p) == 0)
-            continue;
-
-        cmd_history[i] = strdup(p);
-
-        i = (i + 1) % NUMBER_OF_HISTORY;
-    }
-
-    cmd_history_last = i;
-    cmd_history_cursor = cmd_history_last;
-
-    fclose(fp);
-}
-
-static void history_save(void)
-{
-    int i = 0;
-    char filename[PATH_MAX];
-    FILE *fp;
-
-    sprintf(filename, "%s/%s", default_data_location, history_filename);
-
-    fp = fopen(filename, "w");
-    if (!fp)
-        return;
-
-    i = cmd_history_last;
-    do {
-        if (cmd_history[i]) {
-            fprintf(fp, "%s\n", cmd_history[i]);
-            free(cmd_history[i]);
-            cmd_history[i] = NULL;
-        }
-
-        i = (i + 1) % NUMBER_OF_HISTORY;
-    } while (i != cmd_history_last);
-
-    fclose(fp);
-}
-
-static void history_add_cmd(const char *cmd)
-{
-    if (cmd_history[cmd_history_last])
-        free(cmd_history[cmd_history_last]);
-
-    cmd_history[cmd_history_last] = strdup(cmd);
-
-    cmd_history_last = (cmd_history_last + 1) % NUMBER_OF_HISTORY;
-    cmd_history_cursor = cmd_history_last;
-    cmd_cursor_dir = 1;
-}
-
-static const char *history_prev(void)
-{
-    int n;
-    const char *cmd = NULL;
-
-    if (cmd_cursor_dir == -1 &&
-        (cmd_history_cursor == cmd_history_last ||
-         cmd_history[cmd_history_cursor] == NULL))
-        return NULL;
-
-    n = (cmd_history_cursor - 1 + NUMBER_OF_HISTORY) % NUMBER_OF_HISTORY;
-    cmd_history_cursor = n;
-
-    if (cmd_history[n])
-        cmd = cmd_history[n];
-
-    cmd_cursor_dir = -1;
-
-    return cmd;
-}
-
-static const char *history_next(void)
-{
-    int n;
-    const char *cmd = NULL;
-
-    if (cmd_cursor_dir == 1 && cmd_history_cursor == cmd_history_last)
-        return NULL;
-
-    n = (cmd_history_cursor + 1) % NUMBER_OF_HISTORY;
-    cmd_history_cursor = n;
-
-    if (cmd_history_cursor != cmd_history_last)
-        cmd = cmd_history[n];
-
-    cmd_cursor_dir = 1;
-
-    return cmd;
-}
-
-static void log_print(const char *format, va_list args)
-{
-    pthread_mutex_lock(&screen_lock);
-    vwprintw(log_win, format, args);
-    wrefresh(log_win);
-    wrefresh(cmd_win);
-    pthread_mutex_unlock(&screen_lock);
-}
-
-static void output(const char *format, ...)
-{
-    va_list args;
-
-    va_start(args, format);
-
-    pthread_mutex_lock(&screen_lock);
-    vwprintw(output_win, format, args);
-    wrefresh(output_win);
-    wrefresh(cmd_win);
-    pthread_mutex_unlock(&screen_lock);
-
-    va_end(args);
-}
-#define TIME_FORMAT     "%Y-%m-%d %H:%M:%S"
-static void outputEx(const char *format, ...)
-{
-    char timestr[20];
-    char buf[1024];
-    time_t cur = time(NULL);
-
-    strftime(timestr, 20, TIME_FORMAT, localtime(&cur));
-
-    va_list args;
-    va_start(args, format);
-    vsnprintf(buf, sizeof(buf), format, args);
-    va_end(args);
-    buf[1023] = 0;
-
-    output("%s : %s\n", timestr, buf);
-}
-
 static void clear_screen(ElaCarrier *w, int argc, char *argv[])
 {
     if (argc == 1) {
-        pthread_mutex_lock(&screen_lock);
-        wclear(output_win);
-        wrefresh(output_win);
-        wclear(log_win);
-        wrefresh(log_win);
-        wrefresh(cmd_win);
-        pthread_mutex_unlock(&screen_lock);
+        clearScreen(1, NULL);
     } else if (argc == 2) {
-        WINDOW *w;
-        if (strcmp(argv[1], "log") == 0)
-            w = log_win;
-        else if (strcmp(argv[1], "out") == 0)
-            w = output_win;
-        else {
-            output("Invalid command syntax.\n");
-            return;
-        }
-
-        pthread_mutex_lock(&screen_lock);
-        wclear(w);
-        wrefresh(w);
-        wrefresh(cmd_win);
-        pthread_mutex_unlock(&screen_lock);
+        clearScreen(2, argv[1]);
     } else {
         output("Invalid command syntax.\n");
         return;
@@ -919,22 +535,24 @@ static void session_request_callback(ElaCarrier *w, const char *from,
     output("  2. sadd [plain] [reliable] [multiplexing] [portforwarding]\n");
     output("  3. sreply ok\n");
     if (gServerAutoTest) {
-        char *args_addstream[2] = {"", "plain"};
+        char *args_addstream[2] = {"", "reliable"};
         char *args_reply[2] = {"", "ok"};
 
         session_ctx.ws = ela_session_new(w, from);
         if (!session_ctx.ws) {
             output("Create session failed. userid:%s\n", from);
         } else {
-            output("Create session successfully.\n");
+            output("Create session successfully.%s\n", from);
         }
         usleep(1000);
         session_ctx.unchanged_streams = 0;
-        int streamId = stream_add(w, 2, args_addstream);//close streamid
+        streamId = stream_add(w, 2, args_addstream);//close streamid
         output("streamId = %d.\n", streamId);
 
         output("session_request_callback sem_wait\n");
         sem_wait(&session_status);
+        sleep(1);
+        output("session_request_callback ok pls send sreply ok\n");
         session_reply_request(w, 2, args_reply);
     }
 }
@@ -987,8 +605,8 @@ static void stream_bulk_receive(ElaCarrier *w, int argc, char *argv[])
         duration = (duration == 0)  ? 1 : duration;
         float speed = ((session_ctx.bytes / duration) * 1000) / 1024;
 
-        output("\nFinish! Total %" PRIu64 " bytes in %d.%03d seconds. %.2f KB/s\n",
-               session_ctx.bytes,
+        output("\nFinish! Total %" PRIu64 " bytes(%d packets) in %d.%03d seconds. %.2f KB/s\n",
+               session_ctx.bytes, session_ctx.packets,
                (int)(duration / 1000), (int)(duration % 1000), speed);
 
         session_ctx.bulk_mode = 0;
@@ -1003,7 +621,7 @@ static void stream_bulk_receive(ElaCarrier *w, int argc, char *argv[])
 static void stream_on_data(ElaSession *ws, int stream, const void *data,
                            size_t len, void *context)
 {
-    output("session_ctx.bulk_mode=%d", session_ctx.bulk_mode);
+    // output("len=%d ", len);
     if (session_ctx.bulk_mode) {
         if (session_ctx.packets % 1000 == 0)
             output(".");
@@ -1039,7 +657,13 @@ static void stream_on_state_changed(ElaSession *ws, int stream,
         "failed"
     };
 
-    output("Stream [%d] state changed to: %s\n", stream, state_name[state]);
+    char timestr[20];
+    char buf[1024];
+    time_t cur = time(NULL);
+
+    strftime(timestr, 20, "%Y-%m-%d %H:%M:%S", localtime(&cur));
+
+    output("Stream [%d] state changed to: %s  %s\n", stream, state_name[state], timestr);
     if ((state == ElaStreamState_initialized) || (state == ElaStreamState_connected)) {
         output("stream_on_state_changed sem_post\n");
         sem_post(&session_status);
@@ -1237,28 +861,34 @@ static void session_request(ElaCarrier *w, int argc, char *argv[])
 
 static void session_reply_request(ElaCarrier *w, int argc, char *argv[])
 {
-    int rc;
+    int rc, retryTimes = 0;
 
     if ((argc != 2) && (argc != 3)) {
         output("Invalid command syntax.\n");
         return;
     }
-
+    output("session_reply_request arg:%s.\n", argv[1]);
     if ((strcmp(argv[1], "ok") == 0) && (argc == 2)) {
-        rc = ela_session_reply_request(session_ctx.ws, 0, NULL);
+        do {
+            rc = ela_session_reply_request(session_ctx.ws, 0, NULL);
+            if ((rc < 0) && (++retryTimes < 3)) {
+                sleep(1);
+            }
+        } while (rc < 0);
+
         if (rc < 0) {
             output("response invite failed.\n");
         }
         else {
             output("response invite successuflly.\n");
 
-            while (session_ctx.unchanged_streams > 0)
-                usleep(200);
+            while (session_ctx.unchanged_streams > 0) usleep(200);
 
             rc = ela_session_start(session_ctx.ws, session_ctx.remote_sdp,
                                        session_ctx.sdp_len);
 
             output("Session start %s.\n", rc == 0 ? "success" : "failed");
+            sem_wait(&session_status);
         }
     }
     else if ((strcmp(argv[1], "refuse") == 0) && (argc == 3)) {
@@ -1355,7 +985,13 @@ static void *bulk_write_thread(void *arg)
            (uint64_t)(args->packet_size * args->packet_count),
            (int)(duration / 1000), (int)(duration % 1000), speed);
     output("bulk_write_thread sem_post\n");
-    sem_post(&session_status);
+    // sem_post(&session_status);
+
+    ela_session_remove_stream(session_ctx.ws, args->stream);
+    ela_session_close(session_ctx.ws);
+    session_ctx.ws = NULL;
+    session_ctx.remote_sdp[0] = 0;
+    session_ctx.sdp_len = 0;
 
     return NULL;
 }
@@ -1724,102 +1360,6 @@ static void do_cmd(ElaCarrier *w, char *line)
     }
 }
 
-static char *read_cmd(void)
-{
-    int x, y;
-    int w, h;
-    int ch = 0;
-    int rc;
-    char *p;
-
-    static int cmd_len = 0;
-    static char cmd_line[1024];
-
-    ch = getch();
-    if (ch == -1)
-        return NULL;
-
-    getmaxyx(cmd_win, h, w);
-    getyx(cmd_win, y, x);
-
-    (void)h;
-
-    pthread_mutex_lock(&screen_lock);
-    if (ch == 10 || ch == 13) {
-        rc = mvwinnstr(cmd_win, 0, 2, cmd_line, sizeof(cmd_line));
-        mvwinnstr(cmd_win, 1, 0, cmd_line + rc, sizeof(cmd_line) - rc);
-
-        wclear(cmd_win);
-        waddstr(cmd_win, "# ");
-        wrefresh(cmd_win);
-        cmd_len = 0;
-
-        // Trim trailing spaces;
-        for (p = cmd_line + strlen(cmd_line) - 1; p >= cmd_line && isspace(*p); p--);
-        *(++p) = 0;
-
-        // Trim leading spaces;
-        for (p = cmd_line; *p && isspace(*p); p++);
-
-        if (strlen(p)) {
-            history_add_cmd(p);
-            pthread_mutex_unlock(&screen_lock);
-            return p;
-        }
-
-    } else if (ch == 127) {
-        if (cmd_len > 0 && y * w + x - 2 > 0) {
-            if (x == 0) {
-                x = w;
-                y--;
-            }
-            wmove(cmd_win, y, x-1);
-            wdelch(cmd_win);
-            cmd_len--;
-        }
-    } else if (ch == 27) {
-        getch();
-        ch = getch();
-        if (ch == 65 || ch == 66) {
-            p = ch == 65 ? (char *)history_prev() : (char *)history_next();
-            wclear(cmd_win);
-            waddstr(cmd_win, "# ");
-            if (p) waddstr(cmd_win, p);
-            cmd_len = p ? (int)strlen(p) : 0;
-        } /* else if (ch == 67) {
-            if (y * w + x - 2 < cmd_len) {
-                if (x == w-1) {
-                    x = -1;
-                    y++;
-                }
-                wmove(cmd_win, y, x+1);
-            }
-        } else if (ch == 68) {
-            if (y * w + x - 2 > 0) {
-                if (x == 0) {
-                    x = w;
-                    y--;
-                }
-                wmove(cmd_win, y, x-1);
-            }
-        }
-        */
-    } else {
-        if (y * w + x - 2 >= cmd_len) {
-            waddch(cmd_win, ch);
-        } else {
-            winsch(cmd_win, ch);
-            wmove(cmd_win, y, x+1);
-        }
-
-        cmd_len++;
-    }
-
-    wrefresh(cmd_win);
-    pthread_mutex_unlock(&screen_lock);
-
-    return NULL;
-}
 
 static void idle_callback(ElaCarrier *w, void *context)
 {
@@ -1910,8 +1450,38 @@ static void friend_request_callback(ElaCarrier *w, const char *userid,
 ParseMsg(ElaCarrier *w, const char *from, const char *msg, size_t len)
 {
     if (strcmp(msg, "remove") == 0) {//remove friend
+        output("ParseMsg remove\n");
         char *cmdArgs[2] = {"", from};
         friend_remove(w, 2, cmdArgs);
+    }
+    else if (strncmp(msg, "sessiontest ", sizeof("sessiontest ") - 1) == 0) {
+        output("ParseMsg sessiontest\n");
+
+        char id[20];
+        sprintf(id, "%d", streamId);
+
+        char write_argv[2][21];
+        char *delim = " ", *p;
+
+        int i = 0;
+        strtok(msg, delim);//first is sessiontest
+        while(p = strtok(NULL, delim)) {
+            if (NULL != p) {
+                strcpy(write_argv[i], p);
+                output("p:%s\n", p);
+            }
+            else {
+                output("error msg:%s\n", msg);
+            }
+
+            if (++i >= 2) break;
+        }
+
+        char *cmdArgs[4] = {"", id, write_argv[0], write_argv[1]};
+        stream_bulk_write(w, 4, cmdArgs);
+    }
+    else {
+        output("ParseMsg error cmd. %s\n", msg);
     }
 }
 
@@ -2038,6 +1608,8 @@ int main(int argc, char *argv[])
     init_screen();
     history_load();
 
+    sem_init(&session_status, 0, 0);
+
     ela_log_init(cfg->loglevel, cfg->logfile, log_print);
 
     opts.udp_enabled = cfg->udp_enabled;
@@ -2095,12 +1667,6 @@ int main(int argc, char *argv[])
         output("\n");
 
         session_init(w, 1, NULL);
-
-        //
-        if (!ela_address_is_valid("KcPRVCGKWdt49w9bpJFRyXySnCxNvDAibyn23rau42fVqNehc4c")) {
-            output("address is Invalid, pls check args.\n");
-            return;
-        }
 
         rc = ela_run(w, 10);
         if (rc != 0) {

@@ -37,46 +37,13 @@
 #include <sys/select.h>
 #include <semaphore.h>
 
-#ifdef __linux__
-#define __USE_GNU
-
-#include <pthread.h>
-
-#define PTHREAD_RECURSIVE_MUTEX_INITIALIZER PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP
-#else
-#include <pthread.h>
-#endif
-
 #include <ela_carrier.h>
 #include <ela_session.h>
 
 #include "cond.h"
 #include "config.h"
-#include "timedata.h"
-
-#define NUMBER_OF_HISTORY       256
-
-static char default_data_location[PATH_MAX];
-
-static const char *history_filename = ".elashell.history";
-
-static char *cmd_history[NUMBER_OF_HISTORY];
-static int cmd_history_last = 0;
-static int cmd_history_cursor = 0;
-static int cmd_cursor_dir = 1;
-
-WINDOW *output_win_border, *output_win;
-WINDOW *log_win_border, *log_win;
-WINDOW *cmd_win_border, *cmd_win;
-
-pthread_mutex_t screen_lock = PTHREAD_RECURSIVE_MUTEX_INITIALIZER;
-
-#define OUTPUT_WIN  1
-#define LOG_WIN     2
-#define CMD_WIN     3
-
-static int OUTPUT_COLS;
-static int OUTPUT_LINES = 4;
+#include "datastat.h"
+#include "screen.h"
 
 static struct {
     ElaSession *ws;
@@ -105,358 +72,26 @@ bool bOnlineTest = false;
 bool bSessionTest = false;
 bool bAddFriendTest = false;
 int test_loopcnt = 0;
-TimeData testDataOnLine = {0};
-TimeData testDataFriendOnLine = {0};
-TimeData testDataAddFriend = {0};
+int gSessionSendBytes = 0;
+DataStat testDataOnLine = {0};
+DataStat testDataFriendOnLine = {0};
+DataStat testDataAddFriend = {0};
+DataStat testDataSessionSpeed = {0};
+ElaStreamState streamState;
 sem_t session_status;
 
 bool gServerAutoTest = true;
 
 static int stream_add(ElaCarrier *w, int argc, char *argv[]);
+static int stream_addByOption(ElaCarrier *w, int options);
 static void session_reply_request(ElaCarrier *w, int argc, char *argv[]);
-
-static void get_layout(int win, int *w, int *h, int *x, int *y)
-{
-    if (win == OUTPUT_WIN) {
-        if (COLS < 100) {
-            *x = 0;
-            *y = LINES - (LINES -OUTPUT_LINES) / 2 - OUTPUT_LINES;
-
-            *w = COLS;
-            *h = (LINES -OUTPUT_LINES) / 2;
-        } else {
-            *x = 0;
-            *y = 0;
-
-            *w = (COLS - 1) / 2;
-            *h = LINES - OUTPUT_LINES;
-        }
-
-        OUTPUT_COLS = *w -2;
-    } else if (win == LOG_WIN) {
-        if (COLS < 100) {
-            *x = 0;
-            *y = 0;
-
-            *w = COLS;
-            *h = LINES - (LINES -OUTPUT_LINES) / 2 - OUTPUT_LINES;
-        } else {
-            *x = COLS - (COLS / 2);
-            *y = 0;
-
-            *w = (COLS - 1) / 2;
-            *h = LINES - OUTPUT_LINES;
-        }
-    } else if (win == CMD_WIN) {
-        if (COLS < 100) {
-            *x = 0;
-            *y = LINES - OUTPUT_LINES;
-
-            *w = COLS;
-            *h = OUTPUT_LINES;
-        } else {
-            *x = 0;
-            *y = LINES - OUTPUT_LINES;
-
-            *w = COLS;
-            *h = OUTPUT_LINES;
-        }
-    }
-}
-
-static void handle_winch(int sig)
-{
-    int w, h, x, y;
-
-    endwin();
-
-    if (LINES < 20 || COLS < 80) {
-        printf("Terminal size too small!\n");
-        exit(-1);
-    }
-
-    refresh();
-    clear();
-
-    wresize(stdscr, LINES, COLS);
-
-    get_layout(OUTPUT_WIN, &w, &h, &x, &y);
-
-    wresize(output_win_border, h, w);
-    mvwin(output_win_border, y, x);
-    box(output_win_border, 0, 0);
-    mvwprintw(output_win_border, 0, 4, "Output");
-
-    wresize(output_win, h-2, w-2);
-    mvwin(output_win, y+1, x+1);
-
-    get_layout(LOG_WIN, &w, &h, &x, &y);
-
-    wresize(log_win_border, h, w);
-    mvwin(log_win_border, y, x);
-    box(log_win_border, 0, 0);
-    mvwprintw(log_win_border, 0, 4, "Log");
-
-    wresize(log_win, h-2, w-2);
-    mvwin(log_win, y+1,  x+1);
-
-    get_layout(CMD_WIN, &w, &h, &x, &y);
-
-    wresize(cmd_win_border, h, w);
-    mvwin(cmd_win_border, y, x);
-    box(cmd_win_border, 0, 0);
-    mvwprintw(cmd_win_border, 0, 4, "Command");
-
-    wresize(cmd_win, h-2, w-2);
-    mvwin(cmd_win,  y+1,  x+1);
-
-    clear();
-    refresh();
-
-    wrefresh(output_win_border);
-    wrefresh(output_win);
-
-    wrefresh(log_win_border);
-    wrefresh(log_win);
-
-    wrefresh(cmd_win_border);
-    wrefresh(cmd_win);
-}
-
-static void init_screen(void)
-{
-    int w, h, x, y;
-
-    initscr();
-
-    if (LINES < 20 || COLS < 80) {
-        printf("Terminal size too small!\n");
-        endwin();
-        exit(-1);
-    }
-
-    noecho();
-    nodelay(stdscr, TRUE);
-    refresh();
-
-    get_layout(OUTPUT_WIN, &w, &h, &x, &y);
-
-    output_win_border = newwin(h, w, y, x);
-    box(output_win_border, 0, 0);
-    mvwprintw(output_win_border, 0, 4, "Output");
-    wrefresh(output_win_border);
-
-    output_win = newwin(h-2, w-2, y+1, x+1);
-    scrollok(output_win, TRUE);
-    wrefresh(output_win);
-
-    get_layout(LOG_WIN, &w, &h, &x, &y);
-
-    log_win_border = newwin(h, w, y, x);
-    box(log_win_border, 0, 0);
-    mvwprintw(log_win_border, 0, 4, "Log");
-    wrefresh(log_win_border);
-
-    log_win = newwin(h-2, w-2, y+1,  x+1);
-    scrollok(log_win, TRUE);
-    wrefresh(log_win);
-
-    get_layout(CMD_WIN, &w, &h, &x, &y);
-
-    cmd_win_border = newwin(h, w, y, x);
-    box(cmd_win_border, 0, 0);
-    mvwprintw(cmd_win_border, 0, 4, "Command");
-    wrefresh(cmd_win_border);
-
-    cmd_win = newwin(h-2, w-2, y+1,  x+1);
-    scrollok(cmd_win, true);
-    waddstr(cmd_win, "# ");
-    wrefresh(cmd_win);
-
-    struct sigaction sa;
-    memset(&sa, 0, sizeof(struct sigaction));
-    sa.sa_handler = handle_winch;
-    sigaction(SIGWINCH, &sa, NULL);
-}
-
-static void cleanup_screen(void)
-{
-    endwin();
-
-    delwin(output_win_border);
-    delwin(output_win);
-
-    delwin(log_win_border);
-    delwin(log_win);
-
-    delwin(cmd_win_border);
-    delwin(cmd_win);
-}
-
-static void history_load(void)
-{
-    int i = 0;
-    char filename[PATH_MAX];
-    FILE *fp;
-    char line[1024];
-    char *p;
-
-    sprintf(filename, "%s/%s", default_data_location, history_filename);
-
-    fp = fopen(filename, "r");
-    if (!fp)
-        return;
-
-    while (fgets(line, sizeof(line), fp)) {
-        // Trim trailing spaces;
-        for (p = line + strlen(line) - 1; p >= line && isspace(*p); p--);
-        *(++p) = 0;
-
-        // Trim leading spaces;
-        for (p = line; *p && isspace(*p); p++);
-
-        if (strlen(p) == 0)
-            continue;
-
-        cmd_history[i] = strdup(p);
-
-        i = (i + 1) % NUMBER_OF_HISTORY;
-    }
-
-    cmd_history_last = i;
-    cmd_history_cursor = cmd_history_last;
-
-    fclose(fp);
-}
-
-static void history_save(void)
-{
-    int i = 0;
-    char filename[PATH_MAX];
-    FILE *fp;
-
-    sprintf(filename, "%s/%s", default_data_location, history_filename);
-
-    fp = fopen(filename, "w");
-    if (!fp)
-        return;
-
-    i = cmd_history_last;
-    do {
-        if (cmd_history[i]) {
-            fprintf(fp, "%s\n", cmd_history[i]);
-            free(cmd_history[i]);
-            cmd_history[i] = NULL;
-        }
-
-        i = (i + 1) % NUMBER_OF_HISTORY;
-    } while (i != cmd_history_last);
-
-    fclose(fp);
-}
-
-static void history_add_cmd(const char *cmd)
-{
-    if (cmd_history[cmd_history_last])
-        free(cmd_history[cmd_history_last]);
-
-    cmd_history[cmd_history_last] = strdup(cmd);
-
-    cmd_history_last = (cmd_history_last + 1) % NUMBER_OF_HISTORY;
-    cmd_history_cursor = cmd_history_last;
-    cmd_cursor_dir = 1;
-}
-
-static const char *history_prev(void)
-{
-    int n;
-    const char *cmd = NULL;
-
-    if (cmd_cursor_dir == -1 &&
-        (cmd_history_cursor == cmd_history_last ||
-         cmd_history[cmd_history_cursor] == NULL))
-        return NULL;
-
-    n = (cmd_history_cursor - 1 + NUMBER_OF_HISTORY) % NUMBER_OF_HISTORY;
-    cmd_history_cursor = n;
-
-    if (cmd_history[n])
-        cmd = cmd_history[n];
-
-    cmd_cursor_dir = -1;
-
-    return cmd;
-}
-
-static const char *history_next(void)
-{
-    int n;
-    const char *cmd = NULL;
-
-    if (cmd_cursor_dir == 1 && cmd_history_cursor == cmd_history_last)
-        return NULL;
-
-    n = (cmd_history_cursor + 1) % NUMBER_OF_HISTORY;
-    cmd_history_cursor = n;
-
-    if (cmd_history_cursor != cmd_history_last)
-        cmd = cmd_history[n];
-
-    cmd_cursor_dir = 1;
-
-    return cmd;
-}
-
-static void log_print(const char *format, va_list args)
-{
-    pthread_mutex_lock(&screen_lock);
-    vwprintw(log_win, format, args);
-    wrefresh(log_win);
-    wrefresh(cmd_win);
-    pthread_mutex_unlock(&screen_lock);
-}
-
-static void output(const char *format, ...)
-{
-    va_list args;
-
-    va_start(args, format);
-
-    pthread_mutex_lock(&screen_lock);
-    vwprintw(output_win, format, args);
-    wrefresh(output_win);
-    wrefresh(cmd_win);
-    pthread_mutex_unlock(&screen_lock);
-
-    va_end(args);
-}
 
 static void clear_screen(ElaCarrier *w, int argc, char *argv[])
 {
     if (argc == 1) {
-        pthread_mutex_lock(&screen_lock);
-        wclear(output_win);
-        wrefresh(output_win);
-        wclear(log_win);
-        wrefresh(log_win);
-        wrefresh(cmd_win);
-        pthread_mutex_unlock(&screen_lock);
+        clearScreen(1, NULL);
     } else if (argc == 2) {
-        WINDOW *w;
-        if (strcmp(argv[1], "log") == 0)
-            w = log_win;
-        else if (strcmp(argv[1], "out") == 0)
-            w = output_win;
-        else {
-            output("Invalid command syntax.\n");
-            return;
-        }
-
-        pthread_mutex_lock(&screen_lock);
-        wclear(w);
-        wrefresh(w);
-        wrefresh(cmd_win);
-        pthread_mutex_unlock(&screen_lock);
+        clearScreen(2, argv[1]);
     } else {
         output("Invalid command syntax.\n");
         return;
@@ -531,8 +166,9 @@ static void self_info(ElaCarrier *w, int argc, char *argv[])
             return;
         }
 
-        if (argc == 4)
+        if (argc == 4) {
             value = argv[3];
+        }
 
         if (strcmp(argv[2], "name") == 0) {
             strncpy(info.name, value, sizeof(info.name));
@@ -640,8 +276,7 @@ static void friend_add(ElaCarrier *w, int argc, char *argv[])
     if (rc == 0)
         output("Request to add a new friend succeess.\n");
     else
-        output("Request to add a new friend failed(0x%x).\n",
-                ela_get_error());
+        output("Request to add a new friend failed(0x%x).\n", ela_get_error());
 }
 
 static void friend_accept(ElaCarrier *w, int argc, char *argv[])
@@ -690,6 +325,8 @@ static bool friends_list_callback(ElaCarrier *w, const ElaFriendInfo *friend_inf
 {
     static int count;
 
+    output("ElaCallbacksfriend_list...\n");
+
     if (first_friends_item) {
         count = 0;
         output("Friends list from carrier network:\n");
@@ -718,6 +355,8 @@ static bool friends_list_callback(ElaCarrier *w, const ElaFriendInfo *friend_inf
 static bool get_friends_callback(const ElaFriendInfo *friend_info, void *context)
 {
     static int count;
+
+    output("ElaFriendsIterateCallback...\n");
 
     if (first_friends_item) {
         count = 0;
@@ -821,7 +460,7 @@ static int send_message(ElaCarrier *w, int argc, char *argv[])
 
     if (argc != 3) {
         output("Invalid command syntax.\n");
-        return;
+        return -1;
     }
 
     rc = ela_send_friend_message(w, argv[1], argv[2], strlen(argv[2]) + 1);
@@ -904,7 +543,7 @@ static void session_request_callback(ElaCarrier *w, const char *from,
     session_ctx.remote_sdp[len] = 0;
     session_ctx.sdp_len = len;
 
-    output("Session request from[%s] with SDP:\n%s.\n", from, session_ctx.remote_sdp);
+    output("ElaSessionRequestCallback from[%s] with SDP:\n%s.\n", from, session_ctx.remote_sdp);
     output("Reply use following commands:\n");
     output("  sreply refuse [reason]\n");
     output("OR:\n");
@@ -912,7 +551,7 @@ static void session_request_callback(ElaCarrier *w, const char *from,
     output("  2. sadd [plain] [reliable] [multiplexing] [portforwarding]\n");
     output("  3. sreply ok\n");
     if (gServerAutoTest) {
-        const char *args_addstream[2] = {"", "plain"};
+        char *args_addstream[2] = {"", "reliable"};
         char *args_reply[2] = {"", "ok"};
 
         session_ctx.ws = ela_session_new(w, from);
@@ -936,7 +575,7 @@ static void session_request_complete_callback(ElaSession *ws, int status,
 {
     int rc;
 
-    output("Session complete, status: %d, reason: %s\n", status,
+    output("ElaSessionRequestCompleteCallback, status: %d, reason: %s\n", status,
            reason ? reason : "null");
 
     if (status != 0)
@@ -957,6 +596,29 @@ static void session_request_complete_callback(ElaSession *ws, int status,
     }
 }
 
+static void resetSessionCtx(int mode)
+{
+    session_ctx.bulk_mode = mode;
+    session_ctx.bytes = 0;
+    session_ctx.packets = 0;
+}
+
+static void showSessionSpeed()
+{
+    struct timeval start = session_ctx.first_stamp;
+    struct timeval end = session_ctx.last_stamp;
+
+    int duration = (int)((end.tv_sec - start.tv_sec) * 1000000 +
+                         (end.tv_usec - start.tv_usec)) / 1000;
+    duration = (duration == 0)  ? 1 : duration;
+    float speed = ((session_ctx.bytes / duration) * 1000) / 1024;
+    addData(&testDataSessionSpeed, (int)speed);
+
+    output("\nFinish! Total %" PRIu64 " bytes(%d packets) in %d.%03d seconds. %.2f KB/s\n",
+           session_ctx.bytes, session_ctx.packets,
+           (int)(duration / 1000), (int)(duration % 1000), speed);
+}
+
 static void stream_bulk_receive(ElaCarrier *w, int argc, char *argv[])
 {
     if (argc != 2) {
@@ -965,27 +627,13 @@ static void stream_bulk_receive(ElaCarrier *w, int argc, char *argv[])
     }
 
     if (strcmp(argv[1], "start") == 0) {
-        session_ctx.bulk_mode = 1;
-        session_ctx.bytes = 0;
-        session_ctx.packets = 0;
+        resetSessionCtx(0);
 
         output("Ready to receive bulk data");
     } else if (strcmp(argv[1], "end") == 0) {
-        struct timeval start = session_ctx.first_stamp;
-        struct timeval end = session_ctx.last_stamp;
+        showSessionSpeed();
 
-        int duration = (int)((end.tv_sec - start.tv_sec) * 1000000 +
-                             (end.tv_usec - start.tv_usec)) / 1000;
-        duration = (duration == 0)  ? 1 : duration;
-        float speed = ((session_ctx.bytes / duration) * 1000) / 1024;
-
-        output("\nFinish! Total %" PRIu64 " bytes in %d.%03d seconds. %.2f KB/s\n",
-               session_ctx.bytes,
-               (int)(duration / 1000), (int)(duration % 1000), speed);
-
-        session_ctx.bulk_mode = 0;
-        session_ctx.bytes = 0;
-        session_ctx.packets = 0;
+        resetSessionCtx(0);
     } else  {
         output("Invalid command syntax.\n");
         return;
@@ -995,7 +643,6 @@ static void stream_bulk_receive(ElaCarrier *w, int argc, char *argv[])
 static void stream_on_data(ElaSession *ws, int stream, const void *data,
                            size_t len, void *context)
 {
-    output("session_ctx.bulk_mode=%d", session_ctx.bulk_mode);
     if (session_ctx.bulk_mode) {
         if (session_ctx.packets % 1000 == 0)
             output(".");
@@ -1007,6 +654,14 @@ static void stream_on_data(ElaSession *ws, int stream, const void *data,
 
         session_ctx.bytes += len;
         session_ctx.packets++;
+
+        if (bSessionTest && (session_ctx.bytes >= gSessionSendBytes)) {
+            //receive all data
+            showSessionSpeed();
+            resetSessionCtx(1);
+            output("stream_on_data end, post\n");
+            sem_post(&session_status);
+        }
     } else {
         if (gServerAutoTest) {
             output("Stream [%d] received data len:%d\n", stream, (int)len);
@@ -1031,8 +686,10 @@ static void stream_on_state_changed(ElaSession *ws, int stream,
         "failed"
     };
 
-    output("Stream [%d] state changed to: %s\n", stream, state_name[state]);
-    if ((state == ElaStreamState_initialized) || (state == ElaStreamState_connected)) {
+    streamState = state;
+
+    output("ElaStreamCallbacksstate_changed [%d] state changed to: %s\n", stream, state_name[state]);
+    if ((state == ElaStreamState_initialized) || (state == ElaStreamState_connected) || (state == ElaStreamState_failed)) {
         output("stream_on_state_changed sem_post\n");
         sem_post(&session_status);
     }
@@ -1044,48 +701,41 @@ static void stream_on_state_changed(ElaSession *ws, int stream,
 bool on_channel_open(ElaSession *ws, int stream, int channel,
                      const char *cookie, void *context)
 {
-    output("Stream request open new channel %d.\n", channel);
+    output("ElaStreamCallbackschannel_open %d.\n", channel);
     return true;
 }
 
 void on_channel_opened(ElaSession *ws, int stream, int channel, void *context)
 {
-    output("Channel %d:%d opened.\n", stream, channel);
+    output("ElaStreamCallbackschannel_opened stream: %d, channel:%d opened.\n", stream, channel);
 }
 
 void on_channel_close(ElaSession *ws, int stream, int channel,
                       CloseReason reason, void *context)
 {
-    output("Channel %d:%d closed.\n", stream, channel);
+    output("ElaStreamCallbackschannel_close stream: %d, channel:%d closed.\n", stream, channel);
 }
 
 bool on_channel_data(ElaSession *ws, int stream, int channel,
                      const void *data, size_t len, void *context)
 {
-    output("Channel %d:%d received data [%s]\n", stream, channel, data);
+    output("ElaStreamCallbackschannel_data stream: %d, channel:%d received data [%s]\n", stream, channel, data);
     return true;
 }
 
 void on_channel_pending(ElaSession *ws, int stream, int channel, void *context)
 {
-    output("Channel %d:%d is pending.\n", stream, channel);
+    output("ElaStreamCallbackschannel_pending stream: %d, channel:%d is pending.\n", stream, channel);
 }
 
 void on_channel_resume(ElaSession *ws, int stream, int channel, void *context)
 {
-    output("Channel %d:%d resumed.\n", stream, channel);
+    output("ElaStreamCallbackschannel_resume stream: %d, channel:%d resumed.\n", stream, channel);
 }
 
 static void session_init(ElaCarrier *w, int argc, char *argv[])
 {
-    int rc;
-
-    // if (argc != 1) {
-    //     output("Invalid command syntax.\n");
-    //     return;
-    // }
-
-    rc = ela_session_init(w, session_request_callback, NULL);
+    int rc = ela_session_init(w, session_request_callback, NULL);
     if (rc < 0) {
         output("Session initialized failed.\n");
     }
@@ -1141,14 +791,7 @@ static void session_close(ElaCarrier *w, int argc, char *argv[])
 
 static int stream_add(ElaCarrier *w, int argc, char *argv[])
 {
-    int rc;
     int options = 0;
-
-    ElaStreamCallbacks callbacks;
-
-    memset(&callbacks, 0, sizeof(callbacks));
-    callbacks.state_changed = stream_on_state_changed;
-    callbacks.stream_data = stream_on_data;
 
     if (argc < 1) {
         output("Invalid command syntax.\n");
@@ -1172,19 +815,32 @@ static int stream_add(ElaCarrier *w, int argc, char *argv[])
         }
     }
 
-    if ((options & ELA_STREAM_MULTIPLEXING) || (options & ELA_STREAM_PORT_FORWARDING)) {
+    return stream_addByOption(w, options);
+}
+
+static int stream_addByOption(ElaCarrier *w, int options)
+{
+    int rc;
+
+    ElaStreamCallbacks callbacks;
+
+    memset(&callbacks, 0, sizeof(callbacks));
+    callbacks.state_changed = stream_on_state_changed;
+    callbacks.stream_data = stream_on_data;
+
+    // if ((options & ELA_STREAM_MULTIPLEXING) || (options & ELA_STREAM_PORT_FORWARDING)) {
         callbacks.channel_open = on_channel_open;
         callbacks.channel_opened = on_channel_opened;
         callbacks.channel_data = on_channel_data;
         callbacks.channel_pending = on_channel_pending;
         callbacks.channel_resume = on_channel_resume;
         callbacks.channel_close = on_channel_close;
-    }
+    // }
 
     rc = ela_session_add_stream(session_ctx.ws, ElaStreamType_text,
                                 options, &callbacks, NULL);
     if (rc < 0) {
-        output("Add stream failed.\n");
+        output("Add stream failed. ec:%x\n", ela_get_error());
     }
     else {
         session_ctx.unchanged_streams++;
@@ -1319,10 +975,10 @@ static void *bulk_write_thread(void *arg)
     for (i = 0; i < args->packet_count; i++) {
         size_t total = args->packet_size;
         size_t sent = 0;
-        output(" %d\n", i);
+        // output(" %d\n", i);
 
         do {
-            output("^");
+            // output("^");
             rc = ela_stream_write(session_ctx.ws, args->stream,
                                       packet + sent, total - sent);
             if (rc == 0) {
@@ -1631,12 +1287,21 @@ static void *session_test_thread(void *arg)
 
     output("Begin session_test_thread");
 
-    char *args_addstream[2] = {"", "plain"};
-    char stream[12] = {""};
-    char *args_senddata[4] = {"", stream, "2048", "1000"};
+    int packets = 1000, packetSize = 2048, failCnt = 0, totalFail = 0;
+    gSessionSendBytes = packets * packetSize;
+    char args_sessiontest[64];
+    sprintf(args_sessiontest, "sessiontest %d %d", packetSize, packets);
+    char *args_sendmsg[4] = {"", args->userid, args_sessiontest};
 
-    // gettimeofday(&start, NULL);
+    struct timeval start_test, end_test;
+    gettimeofday(&start_test, NULL);
+
+    float consumeTime;
     for (i = 0; i < test_loopcnt; i++) {
+        gettimeofday(&end_test, NULL);
+        consumeTime = CalConsumeTime(end_test, start_test);
+        output(" ---<<< loop:%d consume:%f>>>---\n", i, consumeTime);
+
         session_ctx.ws = ela_session_new(args->w, args->userid);
         if (!session_ctx.ws) {
             output("Create session failed. userid:%s\n", args->userid);
@@ -1646,32 +1311,64 @@ static void *session_test_thread(void *arg)
         session_ctx.unchanged_streams = 0;
 
         //
-        int streamId = stream_add(args->w, 2, args_addstream);
+        int streamId = stream_addByOption(args->w, 4);
         if (-1 == streamId) {
+            totalFail++;
             output("stream_add failed.\n");
             ela_session_close(session_ctx.ws);
             session_ctx.ws = NULL;
             continue;
         }
         output("Line %d.streamId = %d\n", __LINE__, streamId);
-        sprintf(stream, "%d", streamId);
         output("wait stream initialized sem_wait\n");
         sem_wait(&session_status);
 
-        //
+        if (streamState >= ElaStreamState_connected) {
+            totalFail++;
+            output("streamState error\n");
+            ela_session_remove_stream(session_ctx.ws, streamId);
+            ela_session_close(session_ctx.ws);
+            continue;
+        }
+
         session_request(args->w, 1, NULL);
         output("sem_wait\n");
         sem_wait(&session_status);
         output("Line %d.\n", __LINE__);
 
         //
-        stream_bulk_write(args->w, 4, args_senddata);
+        // stream_bulk_write(args->w, 4, args_senddata);
+        send_message(args->w, 3, args_sendmsg);
         output("sem_wait\n");
         sem_wait(&session_status);
 
+        // sleep(1);
+        ela_session_remove_stream(session_ctx.ws, streamId);
+        // sleep(1);
+        ela_session_close(session_ctx.ws);
+        // sem_wait(&session_status);
+        sleep(2);
+
+        if (streamState != ElaStreamState_closed) {
+            totalFail++;
+            if (++failCnt >= 3) {
+                output("stream state is wrong! stop test\n");
+                break;
+            }
+        }
+        else {
+            failCnt = 0;
+        }
+        //todo reset all session_ctx?
+        session_ctx.ws = NULL;
+        session_ctx.remote_sdp[0] = 0;
+        session_ctx.sdp_len = 0;
     }
 
-    output("\nFinish! session_test_thread\n");
+    gettimeofday(&end_test, NULL);
+    consumeTime = CalConsumeTime(end_test, start_test);
+    output("\nFinish! session_test_thread, totalTime:%f\n", consumeTime);
+    OutputData(&testDataSessionSpeed, "sessionSpeed.txt");
     bSessionTest = false;
 
     return NULL;
@@ -1680,18 +1377,17 @@ static void *session_test_thread(void *arg)
 
 static void session_test(ElaCarrier *w, int argc, char *argv[])
 {
-    if (argc != 4) {
+    if (argc != 3) {
         output("Invalid command syntax.\n");
         return;
     }
 
-    test_loopcnt = atoi(argv[3]);
+    test_loopcnt = atoi(argv[2]);
     if (test_loopcnt < 0) test_loopcnt = 1;
     bSessionTest = true;
 
     sessiontest_args.w = w;
-    sessiontest_args.type = atoi(argv[1]);
-    strcpy(sessiontest_args.userid, argv[2]);
+    strcpy(sessiontest_args.userid, argv[1]);
 
     pthread_attr_t attr;
     pthread_t th;
@@ -1700,6 +1396,77 @@ static void session_test(ElaCarrier *w, int argc, char *argv[])
     pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
     pthread_create(&th, &attr, session_test_thread, &sessiontest_args);
     pthread_attr_destroy(&attr);
+}
+
+static void createsession_test(ElaCarrier *w, int argc, char *argv[])
+{
+    if (argc != 4) {
+        output("Invalid command syntax.\n");
+        return;
+    }
+
+    test_loopcnt = atoi(argv[2]);
+    if (test_loopcnt < 0) test_loopcnt = 1;
+
+    int i;
+    for (i = 0; i < test_loopcnt; i++) {
+        output(" ---<<< loop:%d >>>---\n", i);
+
+        session_ctx.ws = ela_session_new(w, argv[1]);
+        if (!session_ctx.ws) {
+            output("Create session failed. userid:%s\n", argv[1]);
+        } else {
+            output("Create session successfully.\n");
+        }
+
+        ela_session_close(session_ctx.ws);
+    }
+}
+
+static void testCreateStream(ElaCarrier *w, char * friendid, int loop)
+{
+    session_ctx.ws = ela_session_new(w, friendid);
+    if (!session_ctx.ws) {
+        output("Create session failed. userid:%s\n", friendid);
+    } else {
+        output("Create session successfully.\n");
+    }
+
+    int i;
+    for (i = 0; i < loop; i++) {
+        output(" ---<<< loop:%d >>>---\n", i);
+
+        int streamId = stream_addByOption(w, 4);
+        if (-1 == streamId) {
+            output("stream_add failed.\n");
+            ela_session_close(session_ctx.ws);
+            session_ctx.ws = NULL;
+            continue;
+        }
+        output("wait stream initialized sem_wait\n");
+        sem_wait(&session_status);
+
+        sleep(1);//?
+        ela_session_remove_stream(session_ctx.ws, streamId);
+        sleep(1);//?
+        ela_session_close(session_ctx.ws);
+        // sem_wait(&session_status);
+        sleep(2);//?
+    }
+    ela_session_close(session_ctx.ws);
+}
+
+static void createstream_test(ElaCarrier *w, int argc, char *argv[])
+{
+    if (argc != 4) {
+        output("Invalid command syntax.\n");
+        return;
+    }
+
+    test_loopcnt = atoi(argv[2]);
+    if (test_loopcnt < 0) test_loopcnt = 1;
+
+    testCreateStream(w, argv[1], test_loopcnt);
 }
 
 struct addfriend_test_args {
@@ -1837,8 +1604,9 @@ struct command {
     { "scleanup",   session_cleanup,        "scleanup" },
     { "kill",       kill_carrier,           "kill" },
     { "onlinetest", online_test,            "onlinetest loopcount" },
-    { "sessiontest", session_test,          "sessiontest type userid loopcount" },
+    { "sessiontest", session_test,          "sessiontest userid loopcount" },
     { "addfriendtest", addfriend_test,      "addfriendtest address loopcount" },
+    { "csstress",   createsession_test,     "csstress userid loopcount"},
     { NULL }
 };
 
@@ -1915,109 +1683,11 @@ static void do_cmd(ElaCarrier *w, char *line)
     }
 }
 
-static char *read_cmd(void)
-{
-    int x, y;
-    int w, h;
-    int ch = 0;
-    int rc;
-    char *p;
-
-    static int cmd_len = 0;
-    static char cmd_line[1024];
-
-    ch = getch();
-    if (ch == -1)
-        return NULL;
-
-    getmaxyx(cmd_win, h, w);
-    getyx(cmd_win, y, x);
-
-    (void)h;
-
-    pthread_mutex_lock(&screen_lock);
-    if (ch == 10 || ch == 13) {
-        rc = mvwinnstr(cmd_win, 0, 2, cmd_line, sizeof(cmd_line));
-        mvwinnstr(cmd_win, 1, 0, cmd_line + rc, sizeof(cmd_line) - rc);
-
-        wclear(cmd_win);
-        waddstr(cmd_win, "# ");
-        wrefresh(cmd_win);
-        cmd_len = 0;
-
-        // Trim trailing spaces;
-        for (p = cmd_line + strlen(cmd_line) - 1; p >= cmd_line && isspace(*p); p--);
-        *(++p) = 0;
-
-        // Trim leading spaces;
-        for (p = cmd_line; *p && isspace(*p); p++);
-
-        if (strlen(p)) {
-            history_add_cmd(p);
-            pthread_mutex_unlock(&screen_lock);
-            return p;
-        }
-
-    } else if (ch == 127) {
-        if (cmd_len > 0 && y * w + x - 2 > 0) {
-            if (x == 0) {
-                x = w;
-                y--;
-            }
-            wmove(cmd_win, y, x-1);
-            wdelch(cmd_win);
-            cmd_len--;
-        }
-    } else if (ch == 27) {
-        getch();
-        ch = getch();
-        if (ch == 65 || ch == 66) {
-            p = ch == 65 ? (char *)history_prev() : (char *)history_next();
-            wclear(cmd_win);
-            waddstr(cmd_win, "# ");
-            if (p) waddstr(cmd_win, p);
-            cmd_len = p ? (int)strlen(p) : 0;
-        } /* else if (ch == 67) {
-            if (y * w + x - 2 < cmd_len) {
-                if (x == w-1) {
-                    x = -1;
-                    y++;
-                }
-                wmove(cmd_win, y, x+1);
-            }
-        } else if (ch == 68) {
-            if (y * w + x - 2 > 0) {
-                if (x == 0) {
-                    x = w;
-                    y--;
-                }
-                wmove(cmd_win, y, x-1);
-            }
-        }
-        */
-    } else {
-        if (y * w + x - 2 >= cmd_len) {
-            waddch(cmd_win, ch);
-        } else {
-            winsch(cmd_win, ch);
-            wmove(cmd_win, y, x+1);
-        }
-
-        cmd_len++;
-    }
-
-    wrefresh(cmd_win);
-    pthread_mutex_unlock(&screen_lock);
-
-    return NULL;
-}
-
 static void idle_callback(ElaCarrier *w, void *context)
 {
     char *cmd = read_cmd();
 
-    if (cmd)
-        do_cmd(w, cmd);
+    if (cmd) do_cmd(w, cmd);
 }
 
 static void connection_callback(ElaCarrier *w, ElaConnectionStatus status,
@@ -2030,6 +1700,7 @@ static void connection_callback(ElaCarrier *w, ElaConnectionStatus status,
         addData(&testDataOnLine, timeuse);
         output("Connected to carrier network: %d ms\n",timeuse);
         // OutputData(&testDataOnLine, "testDataOnLine.txt");
+
         break;
 
     case ElaConnectionStatus_Disconnected:
@@ -2074,6 +1745,10 @@ static void friend_connection_callback(ElaCarrier *w, const char *friendid,
             output("friend_connection_callback cond_signal\n");
             cond_signal(&friendOnLine_cond);
         }
+
+
+        //---------
+        // testCreateStream(w, friendid, 100);
 
         break;
 
@@ -2162,7 +1837,7 @@ void signal_handler(int signum)
 int main(int argc, char *argv[])
 {
     ShellConfig *cfg;
-    char buffer[2048];
+    char buffer[2048] = {0};
     ElaCarrier *w;
     ElaOptions opts;
     int wait_for_attach = 0;
@@ -2218,9 +1893,6 @@ int main(int argc, char *argv[])
         realpath(argv[0], buffer);
         strcat(buffer, ".conf");
     }
-    else {
-        strcpy(buffer, "carrier.conf");//default
-    }
 
     cfg = load_config(buffer);
     if (!cfg) {
@@ -2270,13 +1942,10 @@ int main(int argc, char *argv[])
         w = ela_new(&opts, &callbacks, NULL);
         gettimeofday(&friendOnline.start_stamp, NULL);
 
-        // deref(cfg);
-        // free(opts.bootstraps);
-
         if (!w) {
             output("Error create carrier instance: 0x%x\n", ela_get_error());
             output("Press any key to quit...");
-            nodelay(stdscr, FALSE);
+            nodelay(stdscr, false);
             getch();
             goto quit;
         }
@@ -2294,7 +1963,7 @@ int main(int argc, char *argv[])
         if (rc != 0) {
             output("Error start carrier loop: 0x%x\n", ela_get_error());
             output("Press any key to quit...");
-            nodelay(stdscr, FALSE);
+            nodelay(stdscr, false);
             getch();
             ela_kill(w);
             goto quit;
@@ -2307,8 +1976,13 @@ int main(int argc, char *argv[])
     } while (!bQuit);
 
 quit:
+    ela_session_cleanup(w);
+    deref(cfg);
+    free(opts.bootstraps);
+
     cleanup_screen();
     history_save();
+    // sleep(2);
     return 0;
 }
 
