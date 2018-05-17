@@ -16,7 +16,7 @@ ifeq (, $(findstring $(HOST), Darwin iOS))
 	LIBS := $(LIBS) -lpthread
 endif
 
-OBJS = shell.o config.o timedata.o
+OBJS = shell.o config.o datastat.o screen.o
 
 .PHONY: all clean install
 

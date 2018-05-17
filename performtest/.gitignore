@@ -1,6 +1,10 @@
+*.o
 *.log
 *.txt
 .data
+*.png
+elacarriertest
+
 2018.5.7
 2018.5.8
 *.dem

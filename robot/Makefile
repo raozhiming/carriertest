@@ -16,7 +16,7 @@ ifeq (, $(findstring $(HOST), Darwin iOS))
 	LIBS := $(LIBS) -lpthread
 endif
 
-OBJS = robot.o config.o
+OBJS = robot.o config.o screen.o
 
 .PHONY: all clean install
 
