@@ -46,6 +46,14 @@
 #include "screen.h"
 
 static struct {
+    int disconnect_count;
+    int offline_time;//second
+    ElaConnectionStatus status;
+    struct timeval first_connected;
+    struct timeval last_connected;
+} carrier_ctx;
+
+static struct {
     ElaSession *ws;
     int unchanged_streams;
     char remote_sdp[2048];
@@ -64,6 +72,8 @@ static struct {
 } friendOnline, addFriendTime;
 
 static Condition DEFINE_COND(friendOnLine_cond);
+static Condition DEFINE_COND(carrier_cond);
+static Condition DEFINE_COND(session_cond);
 char testFriendId[ELA_MAX_ID_LEN] = {0};
 
 int loopcount = 0;
@@ -1298,6 +1308,10 @@ static void *session_test_thread(void *arg)
 
     float consumeTime;
     for (i = 0; i < test_loopcnt; i++) {
+        if (carrier_ctx.status != ElaConnectionStatus_Connected) {
+            output(" wair for ElaStreamState_connected\n");
+            cond_wait(&carrier_cond);
+        }
         gettimeofday(&end_test, NULL);
         consumeTime = CalConsumeTime(end_test, start_test);
         output(" ---<<< loop:%d consume:%f>>>---\n", i, consumeTime);
@@ -1400,7 +1414,7 @@ static void session_test(ElaCarrier *w, int argc, char *argv[])
 
 static void createsession_test(ElaCarrier *w, int argc, char *argv[])
 {
-    if (argc != 4) {
+    if (argc != 3) {
         output("Invalid command syntax.\n");
         return;
     }
@@ -1418,7 +1432,6 @@ static void createsession_test(ElaCarrier *w, int argc, char *argv[])
         } else {
             output("Create session successfully.\n");
         }
-
         ela_session_close(session_ctx.ws);
     }
 }
@@ -1699,18 +1712,20 @@ static void connection_callback(ElaCarrier *w, ElaConnectionStatus status,
         int timeuse = 1000 * (friendOnline.middle_stamp.tv_sec -friendOnline.start_stamp.tv_sec) + (friendOnline.middle_stamp.tv_usec - friendOnline.start_stamp.tv_usec) / 1000;
         addData(&testDataOnLine, timeuse);
         output("Connected to carrier network: %d ms\n",timeuse);
-        // OutputData(&testDataOnLine, "testDataOnLine.txt");
-
+        cond_signal(&carrier_cond);
         break;
 
     case ElaConnectionStatus_Disconnected:
         output("Disconnect from carrier network.\n");
         gettimeofday(&friendOnline.start_stamp, NULL);
+        cond_reset(&carrier_cond);
         break;
 
     default:
         output("Error!!! Got unknown connection status %d.\n", status);
     }
+
+    carrier_ctx.status = status;
 }
 
 static void friend_info_callback(ElaCarrier *w, const char *friendid,
@@ -1959,6 +1974,7 @@ int main(int argc, char *argv[])
         session_init(w, 1, NULL);
 
         bQuit = true;
+        carrier_ctx.status = ElaConnectionStatus_Disconnected;
         rc = ela_run(w, 10);
         if (rc != 0) {
             output("Error start carrier loop: 0x%x\n", ela_get_error());

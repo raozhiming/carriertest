@@ -36,6 +36,8 @@
 #endif
 #include "screen.h"
 
+#define TIME_FORMAT     "%Y-%m-%d %H:%M:%S"
+
 #define NUMBER_OF_HISTORY       256
 
 #define OUTPUT_LINES   4
@@ -389,6 +391,23 @@ void output(const char *format, ...)
     }
 
     va_end(args);
+}
+
+void outputEx(const char *format, ...)
+{
+    char timestr[20];
+    char buf[1024];
+    time_t cur = time(NULL);
+
+    strftime(timestr, 20, TIME_FORMAT, localtime(&cur));
+
+    va_list args;
+    va_start(args, format);
+    vsnprintf(buf, sizeof(buf), format, args);
+    va_end(args);
+    buf[1023] = 0;
+
+    output("%s : %s\n", timestr, buf);
 }
 
 void clearScreen(int type, char *screen)

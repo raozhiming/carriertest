@@ -38,6 +38,7 @@ const char *history_next(void);
 
 void log_print(const char *format, va_list args);
 void output(const char *format, ...);
+void outputEx(const char *format, ...);
 void clearScreen(int type, char * screen);
 
 char *read_cmd(void);

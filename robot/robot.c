@@ -66,6 +66,7 @@ int loopcount = 0;
 bool bOnlineTest = false;
 bool bSessionTest = false;
 int test_loopcnt = 0;
+ElaStreamState streamState;
 sem_t session_status;
 int streamId = 0;
 
@@ -545,12 +546,27 @@ static void session_request_callback(ElaCarrier *w, const char *from,
             output("Create session successfully.%s\n", from);
         }
         usleep(1000);
-        session_ctx.unchanged_streams = 0;
-        streamId = stream_add(w, 2, args_addstream);//close streamid
-        output("streamId = %d.\n", streamId);
 
-        output("session_request_callback sem_wait\n");
-        sem_wait(&session_status);
+        int retryTimes = 0;
+        bool bRet = false;
+        do {
+            session_ctx.unchanged_streams = 0;
+            streamId = stream_add(w, 2, args_addstream);//close streamid
+            output("streamId = %d.\n", streamId);
+
+            output("session_request_callback sem_wait\n");
+            sem_wait(&session_status);
+            if (streamState >= ElaStreamState_connected) {
+                // totalFail++;
+                output("streamState error\n");
+                ela_session_remove_stream(session_ctx.ws, streamId);
+                bRet = false;
+                // ela_session_close(session_ctx.ws);
+            }
+            else {
+                bRet = true;
+            }
+        } while (!bRet && ++retryTimes < 20);
         sleep(1);
         output("session_request_callback ok pls send sreply ok\n");
         session_reply_request(w, 2, args_reply);
@@ -664,7 +680,8 @@ static void stream_on_state_changed(ElaSession *ws, int stream,
     strftime(timestr, 20, "%Y-%m-%d %H:%M:%S", localtime(&cur));
 
     output("Stream [%d] state changed to: %s  %s\n", stream, state_name[state], timestr);
-    if ((state == ElaStreamState_initialized) || (state == ElaStreamState_connected)) {
+    streamState = state;
+    if ((state == ElaStreamState_initialized) || (state == ElaStreamState_connected) || (state == ElaStreamState_failed)) {
         output("stream_on_state_changed sem_post\n");
         sem_post(&session_status);
     }
@@ -871,10 +888,11 @@ static void session_reply_request(ElaCarrier *w, int argc, char *argv[])
     if ((strcmp(argv[1], "ok") == 0) && (argc == 2)) {
         do {
             rc = ela_session_reply_request(session_ctx.ws, 0, NULL);
-            if ((rc < 0) && (++retryTimes < 3)) {
+            if ((rc < 0) && (retryTimes < 3)) {
+                output("do ela_session_reply_request again\n");
                 sleep(1);
             }
-        } while (rc < 0);
+        } while ((rc < 0) && (++retryTimes < 3));
 
         if (rc < 0) {
             output("response invite failed.\n");
@@ -884,11 +902,18 @@ static void session_reply_request(ElaCarrier *w, int argc, char *argv[])
 
             while (session_ctx.unchanged_streams > 0) usleep(200);
 
-            rc = ela_session_start(session_ctx.ws, session_ctx.remote_sdp,
-                                       session_ctx.sdp_len);
+            retryTimes = 0;
+            do {
+                rc = ela_session_start(session_ctx.ws, session_ctx.remote_sdp,
+                                           session_ctx.sdp_len);
 
-            output("Session start %s.\n", rc == 0 ? "success" : "failed");
-            sem_wait(&session_status);
+                output("Session start %s.\n", rc == 0 ? "success" : "failed");
+                sem_wait(&session_status);
+                if ((streamState != ElaStreamState_connected) && (retryTimes < 3)) {
+                    output("do ela_session_start again\n");
+                    sleep(1);
+                }
+            } while ((rc < 0) && (++retryTimes < 3));
         }
     }
     else if ((strcmp(argv[1], "refuse") == 0) && (argc == 3)) {
@@ -918,7 +943,7 @@ static void stream_write(ElaCarrier *w, int argc, char *argv[])
     rc = ela_stream_write(session_ctx.ws, atoi(argv[1]),
                               argv[2], strlen(argv[2]) + 1);
     if (rc < 0) {
-        output("write data failed.\n");
+        output("write data failed. rc = 0x%x\n", ela_get_error());
     }
     else {
         output("write data successfully.\n");
@@ -963,8 +988,9 @@ static void *bulk_write_thread(void *arg)
                     usleep(100);
                     continue;
                 } else {
-                    output("\nWrite data failed.\n");
-                    return NULL;
+                    output("\nwrite data failed. rc = 0x%x\n", ela_get_error());
+                    continue;
+                    // return NULL;
                 }
             }
 
@@ -1376,7 +1402,7 @@ static void connection_callback(ElaCarrier *w, ElaConnectionStatus status,
     case ElaConnectionStatus_Connected:
         gettimeofday(&friendOnline.connect2Carrier_stamp, NULL);
         int timeuse = 1000 * (friendOnline.connect2Carrier_stamp.tv_sec -friendOnline.createNode_stamp.tv_sec) + (friendOnline.connect2Carrier_stamp.tv_usec - friendOnline.createNode_stamp.tv_usec) / 1000;
-        output("Connected to carrier network: %d ms\n",timeuse);
+        outputEx("Connected to carrier network: %d ms\n",timeuse);
         break;
 
     case ElaConnectionStatus_Disconnected:
@@ -1407,7 +1433,7 @@ static void friend_connection_callback(ElaCarrier *w, const char *friendid,
         break;
 
     case ElaConnectionStatus_Disconnected:
-        output("Friend[%s] connection changed to be offline.\n", friendid);
+        outputEx("Friend[%s] connection changed to be offline.\n", friendid);
         break;
 
     default:
