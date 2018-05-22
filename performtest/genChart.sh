@@ -1,6 +1,5 @@
 #/bin/sh
 
-echo "argc " + $#
 if [ $# -eq 0 ];then
    echo "usage: ./genChart xxx.dem"
    exit

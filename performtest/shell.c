@@ -92,6 +92,8 @@ sem_t session_status;
 
 bool gServerAutoTest = true;
 
+const char* onLineMonitorFileName = "online.txt";
+
 static int stream_add(ElaCarrier *w, int argc, char *argv[]);
 static int stream_addByOption(ElaCarrier *w, int options);
 static void session_reply_request(ElaCarrier *w, int argc, char *argv[]);
@@ -1711,13 +1713,15 @@ static void connection_callback(ElaCarrier *w, ElaConnectionStatus status,
         gettimeofday(&friendOnline.middle_stamp, NULL);
         int timeuse = 1000 * (friendOnline.middle_stamp.tv_sec -friendOnline.start_stamp.tv_sec) + (friendOnline.middle_stamp.tv_usec - friendOnline.start_stamp.tv_usec) / 1000;
         addData(&testDataOnLine, timeuse);
-        output("Connected to carrier network: %d ms\n",timeuse);
+        outputEx("Connected to carrier network: %d ms\n",timeuse);
+        writeData(friendOnline.middle_stamp.tv_sec, true, carrier_ctx.status != status, onLineMonitorFileName, false);
         cond_signal(&carrier_cond);
         break;
 
     case ElaConnectionStatus_Disconnected:
-        output("Disconnect from carrier network.\n");
+        outputEx("Disconnect from carrier network.\n");
         gettimeofday(&friendOnline.start_stamp, NULL);
+        writeData(friendOnline.start_stamp.tv_sec, false, carrier_ctx.status != status, onLineMonitorFileName, false);
         cond_reset(&carrier_cond);
         break;
 
@@ -1768,7 +1772,7 @@ static void friend_connection_callback(ElaCarrier *w, const char *friendid,
         break;
 
     case ElaConnectionStatus_Disconnected:
-        output("Friend[%s] connection changed to be offline.\n", friendid);
+        outputEx("Friend[%s] connection changed to be offline.\n", friendid);
         break;
 
     default:
@@ -1975,6 +1979,7 @@ int main(int argc, char *argv[])
 
         bQuit = true;
         carrier_ctx.status = ElaConnectionStatus_Disconnected;
+        writeData(0, true, false, onLineMonitorFileName, true);//clear data
         rc = ela_run(w, 10);
         if (rc != 0) {
             output("Error start carrier loop: 0x%x\n", ela_get_error());

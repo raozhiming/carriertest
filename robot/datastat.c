@@ -48,14 +48,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
-#include "timedata.h"
+#include "datastat.h"
 
 void addnode(DataArray** list, int cnt, int value)
 {
     DataArray* node = (DataArray*)malloc(sizeof(DataArray));
     if (NULL == node) return;
 
-    node->consumeTime = value;
+    node->value = value;
     node->next = NULL;
 
     if (0 == cnt) {
@@ -76,7 +76,7 @@ void insertnodebysort(DataArray** list, int cnt, int value)
     DataArray* node = (DataArray*)malloc(sizeof(DataArray));
     if (NULL == node) return;
 
-    node->consumeTime = value;
+    node->value = value;
     node->next = NULL;
 
     if (0 == cnt) {
@@ -84,7 +84,7 @@ void insertnodebysort(DataArray** list, int cnt, int value)
         return;
     }
 
-    if (value <= (*list)->consumeTime) {
+    if (value <= (*list)->value) {
         node->next = *list;
         *list = node;
         return;
@@ -95,7 +95,7 @@ void insertnodebysort(DataArray** list, int cnt, int value)
     int i;
     for (i = 0; i < cnt - 1; i++) {
         pCur = pPre->next;
-        if (value <= pCur->consumeTime) {
+        if (value <= pCur->value) {
             node->next = pCur;
             pPre->next = node;
             return;
@@ -105,19 +105,19 @@ void insertnodebysort(DataArray** list, int cnt, int value)
     pPre->next = node;
 }
 
-void addData(TimeData * timedata, int value)
+void addData(DataStat * data, int value)
 {
-    addnode(&timedata->value_origin, timedata->count, value);
-    insertnodebysort(&timedata->value_sort, timedata->count, value);
-    timedata->count++;
+    addnode(&data->value_origin, data->count, value);
+    insertnodebysort(&data->value_sort, data->count, value);
+    data->count++;
 }
 
-void Dispose(TimeData* timedata)
+void Dispose(DataStat* data)
 {
     int i;
-    DataArray *pTemp = (timedata)->value_origin;
-    DataArray *pTemp2 = (timedata)->value_sort;
-    for (i = 0; i < (timedata)->count; i++) {
+    DataArray *pTemp = (data)->value_origin;
+    DataArray *pTemp2 = (data)->value_sort;
+    for (i = 0; i < (data)->count; i++) {
         DataArray *pNext = pTemp->next;
         DataArray *pNext2 = pTemp2->next;
 
@@ -127,9 +127,9 @@ void Dispose(TimeData* timedata)
         pTemp2 = pNext2;
     }
 
-    (timedata)->value_origin = NULL;
-    (timedata)->value_sort = NULL;
-    (timedata)->count = 0;
+    (data)->value_origin = NULL;
+    (data)->value_sort = NULL;
+    (data)->count = 0;
 }
 
 void getDate(char* dateStr)
@@ -142,7 +142,7 @@ void getDate(char* dateStr)
     sprintf(dateStr, "%04d%02d%02d%02d%02d", 1900 + p->tm_year, 1+p->tm_mon, p->tm_mday, p->tm_hour, p->tm_min);
 }
 
-void OutputData(TimeData* timedata, const char* filename)
+void OutputData(DataStat* data, const char* filename)
 {
     char curTime[256] = {0}, backFileName[256] = {0};
     getDate(curTime);
@@ -160,19 +160,19 @@ void OutputData(TimeData* timedata, const char* filename)
 
     int i, averageValue = 0;
     long long totalValue = 0;
-    DataArray *pTemp = (timedata)->value_origin;
-    DataArray *pTemp2 = (timedata)->value_sort;
-    for (i = 0; i < (timedata)->count; i++) {
-        fprintf(fp, "%d, %d, %d\n", i, pTemp->consumeTime, pTemp2->consumeTime);
+    DataArray *pTemp = (data)->value_origin;
+    DataArray *pTemp2 = (data)->value_sort;
+    for (i = 0; i < (data)->count; i++) {
+        fprintf(fp, "%d, %d, %d\n", i, pTemp->value, pTemp2->value);
         if (fpBackup) {
-            fprintf(fpBackup, "%d, %d, %d\n", i, pTemp->consumeTime, pTemp2->consumeTime);
+            fprintf(fpBackup, "%d, %d, %d\n", i, pTemp->value, pTemp2->value);
         }
-        totalValue += pTemp2->consumeTime;
+        totalValue += pTemp2->value;
         pTemp = pTemp->next;
         pTemp2 = pTemp2->next;
     }
 
-    averageValue = totalValue / timedata->count;
+    averageValue = totalValue / data->count;
     fprintf(fp, "%d, \n", averageValue);
     if (fpBackup) {
         fprintf(fpBackup, "%d, \n", averageValue);
@@ -180,4 +180,38 @@ void OutputData(TimeData* timedata, const char* filename)
 
     fclose(fp);
     if (fpBackup) fclose(fpBackup);
+}
+
+float CalConsumeTime(struct timeval end, struct timeval start)
+{
+    return end.tv_sec - start.tv_sec + (end.tv_usec - start.tv_usec) / 1000000;
+}
+
+
+//
+void writeData(__time_t seconds, bool onLine, bool bStateChanged, char * filename, bool bClear)
+{
+    FILE *fp = NULL;
+    if (bClear) {
+        fp = fopen(filename, "w");
+        fclose(fp);
+        return;
+    }
+
+    fp = fopen(filename, "a+");
+    if (!fp) {
+        return;
+    }
+
+    struct tm *p;
+    if (bStateChanged) {
+        __time_t preSecond = seconds - 1;
+        p = gmtime(&preSecond);
+        fprintf(fp, "%02d-%02d-%02d:%02d:%02d  %d\n", (1+p->tm_mon),p->tm_mday, p->tm_hour + 8, p->tm_min, p->tm_sec, !onLine);
+    }
+
+    p = gmtime(&seconds);
+    fprintf(fp, "%02d-%02d-%02d:%02d:%02d  %d\n", (1+p->tm_mon),p->tm_mday, p->tm_hour + 8, p->tm_min, p->tm_sec, onLine);
+
+    fclose(fp);
 }

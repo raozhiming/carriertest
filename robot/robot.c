@@ -42,7 +42,16 @@
 #include <ela_session.h>
 
 #include "config.h"
+#include "datastat.h"
 #include "screen.h"
+
+static struct {
+    int disconnect_count;
+    int offline_time;//second
+    ElaConnectionStatus status;
+    struct timeval first_connected;
+    struct timeval last_connected;
+} carrier_ctx;
 
 static struct {
     ElaSession *ws;
@@ -72,6 +81,8 @@ int streamId = 0;
 
 bool gFriendRequest = false;
 bool gServerAutoTest = true;
+
+const char* onLineMonitorFileName = "online.txt";
 
 static int stream_add(ElaCarrier *w, int argc, char *argv[]);
 static void session_reply_request(ElaCarrier *w, int argc, char *argv[]);
@@ -1402,17 +1413,21 @@ static void connection_callback(ElaCarrier *w, ElaConnectionStatus status,
     case ElaConnectionStatus_Connected:
         gettimeofday(&friendOnline.connect2Carrier_stamp, NULL);
         int timeuse = 1000 * (friendOnline.connect2Carrier_stamp.tv_sec -friendOnline.createNode_stamp.tv_sec) + (friendOnline.connect2Carrier_stamp.tv_usec - friendOnline.createNode_stamp.tv_usec) / 1000;
+        writeData(friendOnline.connect2Carrier_stamp.tv_sec, true, carrier_ctx.status != status, onLineMonitorFileName, false);
         outputEx("Connected to carrier network: %d ms\n",timeuse);
         break;
 
     case ElaConnectionStatus_Disconnected:
         gettimeofday(&friendOnline.createNode_stamp, NULL);
+        writeData(friendOnline.createNode_stamp.tv_sec, false, carrier_ctx.status != status, onLineMonitorFileName, false);
         outputEx("Disconnect from carrier network.\n");
         break;
 
     default:
         output("Error!!! Got unknown connection status %d.\n", status);
     }
+
+    carrier_ctx.status = status;
 }
 
 static void friend_info_callback(ElaCarrier *w, const char *friendid,
@@ -1694,6 +1709,7 @@ int main(int argc, char *argv[])
 
         session_init(w, 1, NULL);
 
+        writeData(0, true, false, onLineMonitorFileName, true);//clear data
         rc = ela_run(w, 10);
         if (rc != 0) {
             output("Error start carrier loop: 0x%x\n", ela_get_error());

@@ -186,3 +186,36 @@ float CalConsumeTime(struct timeval end, struct timeval start)
 {
     return end.tv_sec - start.tv_sec + (end.tv_usec - start.tv_usec) / 1000000;
 }
+
+
+//
+void writeData(__time_t seconds, bool onLine, bool bStateChanged, char * filename, bool bClear)
+{
+    struct tm *p;
+    FILE *fp = NULL;
+    char *mode = "a+";
+    if (bClear) {
+        mode = "w";
+        struct timeval current_stamp;
+        gettimeofday(&current_stamp, NULL);
+        seconds = current_stamp.tv_sec;
+        onLine = false;
+        bStateChanged = false;
+    }
+
+    fp = fopen(filename, mode);
+    if (!fp) {
+        return;
+    }
+
+    if (bStateChanged) {
+        __time_t preSecond = seconds - 1;
+        p = gmtime(&preSecond);
+        fprintf(fp, "%02d-%02d-%02d:%02d:%02d  %d\n", (1+p->tm_mon),p->tm_mday, p->tm_hour + 8, p->tm_min, p->tm_sec, !onLine);
+    }
+
+    p = gmtime(&seconds);
+    fprintf(fp, "%02d-%02d-%02d:%02d:%02d  %d\n", (1+p->tm_mon),p->tm_mday, p->tm_hour + 8, p->tm_min, p->tm_sec, onLine);
+
+    fclose(fp);
+}
