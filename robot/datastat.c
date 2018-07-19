@@ -189,7 +189,7 @@ float CalConsumeTime(struct timeval end, struct timeval start)
 
 
 //
-void writeData(__time_t seconds, bool onLine, bool bStateChanged, char * filename, bool bClear)
+void writeData(time_t seconds, bool onLine, bool bStateChanged, char * filename, bool bClear)
 {
     FILE *fp = NULL;
     if (bClear) {
@@ -205,7 +205,7 @@ void writeData(__time_t seconds, bool onLine, bool bStateChanged, char * filenam
 
     struct tm *p;
     if (bStateChanged) {
-        __time_t preSecond = seconds - 1;
+        time_t preSecond = seconds - 1;
         p = gmtime(&preSecond);
         fprintf(fp, "%02d-%02d-%02d:%02d:%02d  %d\n", (1+p->tm_mon),p->tm_mday, p->tm_hour + 8, p->tm_min, p->tm_sec, !onLine);
     }
