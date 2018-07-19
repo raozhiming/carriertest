@@ -42,5 +42,5 @@ void addData(DataStat * timedata, int value1);
 void OutputData(DataStat* timedata, const char* filename);
 float CalConsumeTime(struct timeval start, struct timeval end);
 
-void writeData(__time_t seconds, bool onLine, bool bStateChanged, char * filename, bool bClear);
+void writeData(time_t seconds, bool onLine, bool bStateChanged, char * filename, bool bClear);
 #endif /* __SHELL_DATA_H__ */

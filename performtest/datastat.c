@@ -189,7 +189,7 @@ float CalConsumeTime(struct timeval end, struct timeval start)
 
 
 //
-void writeData(__time_t seconds, bool onLine, bool bStateChanged, char * filename, bool bClear)
+void writeData(time_t seconds, bool onLine, bool bStateChanged, char * filename, bool bClear)
 {
     struct tm *p;
     FILE *fp = NULL;
