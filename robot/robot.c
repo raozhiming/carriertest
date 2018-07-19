@@ -71,6 +71,13 @@ static struct {
     struct timeval friendOnline_stamp;
 } friendOnline;
 
+static struct {
+    int receive_count;
+    struct timeval startsend_stamp;
+    struct timeval endsend_stamp;
+    struct timeval lastreceive_stamp;
+} messageStats;
+
 int loopcount = 0;
 bool bOnlineTest = false;
 bool bSessionTest = false;
@@ -81,6 +88,9 @@ int streamId = 0;
 
 bool gFriendRequest = false;
 bool gServerAutoTest = true;
+
+static char sFriendList[2000][ELA_MAX_ID_LEN+1] = {0};
+static int sFriendCount = 0;
 
 const char* onLineMonitorFileName = "online.txt";
 
@@ -324,10 +334,8 @@ static const char *connection_name[] = {
 static bool friends_list_callback(ElaCarrier *w, const ElaFriendInfo *friend_info,
                                  void *context)
 {
-    static int count;
-
     if (first_friends_item) {
-        count = 0;
+        sFriendCount = 0;
         output("Friends list from carrier network:\n");
         output("  %-46s %8s %s\n", "ID", "Connection", "Label");
         output("  %-46s %8s %s\n", "----------------", "----------", "-----");
@@ -337,12 +345,11 @@ static bool friends_list_callback(ElaCarrier *w, const ElaFriendInfo *friend_inf
         output("  %-46s %8s %s\n", friend_info->user_info.userid,
                connection_name[friend_info->status], friend_info->label);
         first_friends_item = 0;
-        count++;
+        strcpy(sFriendList[sFriendCount], friend_info->user_info.userid);
+        sFriendCount++;
     } else {
-        /* The list ended */
         output("  ----------------\n");
-        output("Total %d friends.\n", count);
-
+        output("Total %d friends.\n", sFriendCount);
         first_friends_item = 1;
     }
 
@@ -354,9 +361,13 @@ static bool friends_list_callback(ElaCarrier *w, const ElaFriendInfo *friend_inf
 static bool get_friends_callback(const ElaFriendInfo *friend_info, void *context)
 {
     static int count;
+    static int online;
+
+    output("ElaFriendsIterateCallback...\n");
 
     if (first_friends_item) {
         count = 0;
+        online = 0;
         output("Friends list:\n");
         output("  %-46s %8s %s\n", "ID", "Connection", "Label");
         output("  %-46s %8s %s\n", "----------------", "----------", "-----");
@@ -367,10 +378,11 @@ static bool get_friends_callback(const ElaFriendInfo *friend_info, void *context
                connection_name[friend_info->status], friend_info->label);
         first_friends_item = 0;
         count++;
+        if (ElaConnectionStatus_Connected == friend_info->status) online++;
     } else {
         /* The list ended */
         output("  ----------------\n");
-        output("Total %d friends.\n", count);
+        output("Total %d friends. online:%d\n", count, online);
 
         first_friends_item = 1;
     }
@@ -465,6 +477,32 @@ static void send_message(ElaCarrier *w, int argc, char *argv[])
         output("Send message success.\n");
     else
         output("Send message failed(0x%x).\n", ela_get_error());
+}
+
+static void send_message2all(ElaCarrier *w, int argc, char *argv[])
+{
+    if (argc != 2) {
+        output("Invalid command syntax.\n");
+        return;
+    }
+    struct timeval start, end;
+    int duration;
+
+    messageStats.receive_count = 0;
+    gettimeofday(&messageStats.startsend_stamp, NULL);
+
+    int i, rc, messageLen = strlen(argv[1]) + 1;
+    for (i = 0; i < sFriendCount; i++) {
+        rc = ela_send_friend_message(w, sFriendList[i], argv[1], messageLen);
+        if (rc == 0)
+            output("Send message success.\n");
+        else
+            output("Send message failed(0x%x).\n", ela_get_error());
+    }
+    gettimeofday(&messageStats.endsend_stamp, NULL);
+    duration = (int)((messageStats.endsend_stamp.tv_sec - messageStats.startsend_stamp.tv_sec) * 1000000 +
+                     (messageStats.endsend_stamp.tv_usec - messageStats.startsend_stamp.tv_usec)) / 1000;
+    printf("send_message end: %dms\n", duration);
 }
 
 static void invite_response_callback(ElaCarrier *w, const char *friendid,
@@ -1296,6 +1334,7 @@ struct command {
     { "friend",     show_friend,            "friend userid" },
     { "label",      label_friend,           "label userid name" },
     { "msg",        send_message,           "msg userid message" },
+    { "msg2",       send_message2all,       "msg message" },
     { "invite",     invite,                 "invite userid data" },
     { "ireply",     reply_invite,           "ireply userid [confirm message | refuse reason]" },
 
@@ -1522,14 +1561,19 @@ ParseMsg(ElaCarrier *w, const char *from, const char *msg, size_t len)
         stream_bulk_write(w, 4, cmdArgs);
     }
     else {
-        output("ParseMsg error cmd. %s\n", msg);
+        // output("ParseMsg not cmd.\n");
     }
 }
 
 static void message_callback(ElaCarrier *w, const char *from,
                              const char *msg, size_t len, void *context)
 {
-    output("Message from friend[%s]: %.*s\n", from, (int)len, msg);
+    messageStats.receive_count++;
+    gettimeofday(&messageStats.lastreceive_stamp, NULL);
+    int duration = (int)((messageStats.lastreceive_stamp.tv_sec - messageStats.startsend_stamp.tv_sec) * 1000000 +
+                     (messageStats.lastreceive_stamp.tv_usec - messageStats.startsend_stamp.tv_usec)) / 1000;
+    output("[%d][%dms] Message from friend[%s]: %d.%s\n", messageStats.receive_count, duration, from, (int)len, msg);
+
     ParseMsg(w, from, msg, len);
 }
 
@@ -1580,7 +1624,7 @@ void signal_handler(int signum)
 int main(int argc, char *argv[])
 {
     ShellConfig *cfg;
-    char buffer[2048];
+    char buffer[2048] = {0};
     ElaCarrier *w;
     ElaOptions opts;
     int wait_for_attach = 0;

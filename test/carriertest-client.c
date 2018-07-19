@@ -42,6 +42,11 @@
 #include "config.h"
 
 static char *spIndex = NULL;
+static char serverAddress[ELA_MAX_ADDRESS_LEN+1];
+static char serverUserID[ELA_MAX_ID_LEN+1];
+static bool sNeedAddServer = false;
+
+static bool friends_list_callback(ElaCarrier *w, const ElaFriendInfo *friend_info, void *context);
 
 void start_node(const char* app, int node_count)
 {
@@ -95,6 +100,13 @@ static void connection_callback(ElaCarrier *w, ElaConnectionStatus status, void 
         printf("[%4s] Connected to carrier network: \n", spIndex);
     //     writeData(friendOnline.middle_stamp.tv_sec, true, carrier_ctx.status != status, onLineMonitorFileName, false);
     //     cond_signal(&carrier_cond);
+        if (sNeedAddServer) {
+            int rc = ela_add_friend(w, serverAddress, "auto-reply");
+            if (rc) {
+                printf("ela_add_friend error (0x%x)\n", ela_get_error());
+            }
+        }
+
         break;
 
     case ElaConnectionStatus_Disconnected:
@@ -113,40 +125,48 @@ static void connection_callback(ElaCarrier *w, ElaConnectionStatus status, void 
 
 static void friend_added_callback(ElaCarrier *w, const ElaFriendInfo *info, void *context)
 {
-    // output("New friend added. The friend information:\n");
+    printf("friend_added_callback. The friend information:\n");
+    sNeedAddServer = false;
     // display_friend_info(info);
 }
 
 static void friend_removed_callback(ElaCarrier *w, const char *friendid, void *context)
 {
-    // output("Friend %s removed!\n", friendid);
+    printf("Friend %s removed!\n", friendid);
 }
+
+static int first_friends_item = 1;
+
+static const char *connection_name[] = {
+    "online",
+    "offline"
+};
 
 static bool friends_list_callback(ElaCarrier *w, const ElaFriendInfo *friend_info, void *context)
 {
-    // static int count;
+    static int count;
 
-    // output("ElaCallbacksfriend_list...\n");
+    printf("ElaCallbacksfriend_list...\n");
 
-    // if (first_friends_item) {
-    //     count = 0;
-    //     output("Friends list from carrier network:\n");
-    //     output("  %-46s %8s %s\n", "ID", "Connection", "Label");
-    //     output("  %-46s %8s %s\n", "----------------", "----------", "-----");
-    // }
+    if (first_friends_item) {
+        count = 0;
+        printf("Friends list from carrier network:\n");
+        printf("  %-46s %8s %s\n", "ID", "Connection", "Label");
+        printf("  %-46s %8s %s\n", "----------------", "----------", "-----");
+    }
 
-    // if (friend_info) {
-    //     output("  %-46s %8s %s\n", friend_info->user_info.userid,
-    //            connection_name[friend_info->status], friend_info->label);
-    //     first_friends_item = 0;
-    //     count++;
-    // } else {
-    //     /* The list ended */
-    //     output("  ----------------\n");
-    //     output("Total %d friends.\n", count);
+    if (friend_info) {
+        printf("  %-46s %8s %s\n", friend_info->user_info.userid,
+               connection_name[friend_info->status], friend_info->label);
+        first_friends_item = 0;
+        count++;
+    } else {
+        /* The list ended */
+        printf("  ----------------\n");
+        printf("Total %d friends.\n", count);
 
-    //     first_friends_item = 1;
-    // }
+        first_friends_item = 1;
+    }
 
     return true;
 }
@@ -185,13 +205,15 @@ static bool get_friends_callback(const ElaFriendInfo *friend_info, void *context
 static void friend_info_callback(ElaCarrier *w, const char *friendid,
                                     const ElaFriendInfo *info, void *context)
 {
-    // output("Friend information changed:\n");
+    printf("Friend information changed:\n");
     // display_friend_info(info);
 }
 
 static void friend_connection_callback(ElaCarrier *w, const char *friendid,
                                     ElaConnectionStatus status, void *context)
 {
+    printf("friend_connection_callback\n");
+
     // switch (status) {
     // case ElaConnectionStatus_Connected:
 
@@ -246,8 +268,8 @@ static void friend_request_callback(ElaCarrier *w, const char *userid,
                                     const ElaUserInfo *info, const char *hello,
                                     void *context)
 {
-    // output("Friend request from user[%s] with HELLO: %s.\n",
-    //        *info->name ? info->name : userid, hello);
+    printf("Friend request from user[%s] with HELLO: %s.\n",
+           *info->name ? info->name : userid, hello);
     // output("Reply use following commands:\n");
     // output("  faccept %s\n", userid);
 }
@@ -255,8 +277,9 @@ static void friend_request_callback(ElaCarrier *w, const char *userid,
 static void message_callback(ElaCarrier *w, const char *from,
                                     const char *msg, size_t len, void *context)
 {
-    // output("Message from friend[%s]: %.*s\n", from, (int)len, msg);
+    printf("Message from friend[%s]: %.*s\n", from, (int)len, msg);
     //parsemsg
+    ela_send_friend_message(w, from, msg, len);
 }
 
 static void invite_request_callback(ElaCarrier *w, const char *from,
@@ -327,9 +350,16 @@ int main(int argc, char *argv[])
     TestConfig *testcfg;
     testcfg = load_test_config("carriertest.conf");
     if (!testcfg) {
-        fprintf(stderr, "loading configure failed !\n");
+        printf("loading configure failed !\n");
         return -1;
     }
+
+    char *id = ela_get_id_by_address(testcfg->server_address, serverUserID, ELA_MAX_ID_LEN + 1);
+    if (!id) {
+        printf("server_address is invalid, pls check configure!\n");
+        return -1;
+    }
+    strcpy(serverAddress, testcfg->server_address);
 
     if (argc < 2) {
         printf("config: node_count : %d, datadir:%s, server_address:%s\n", \
@@ -367,6 +397,11 @@ int main(int argc, char *argv[])
         // printf("   Node ID: %s\n", ela_get_nodeid(w, buf, sizeof(buf)));
         printf("   User ID: %s\n", ela_get_userid(w, buf, sizeof(buf)));
         printf("   Address: %s\n\n", ela_get_address(w, buf, sizeof(buf)));
+
+        bool isfriend = ela_is_friend(w, serverUserID);
+        if (!isfriend) {
+            sNeedAddServer = true;
+        }
 
         // session_init(w, 1, NULL);
 

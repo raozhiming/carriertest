@@ -1980,7 +1980,7 @@ int main(int argc, char *argv[])
         bQuit = true;
         carrier_ctx.status = ElaConnectionStatus_Disconnected;
         writeData(0, true, false, onLineMonitorFileName, true);//clear data
-        rc = ela_run(w, 1000);
+        rc = ela_run(w, 100);
         if (rc != 0) {
             output("Error start carrier loop: 0x%x\n", ela_get_error());
             output("Press any key to quit...");
