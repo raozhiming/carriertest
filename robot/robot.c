@@ -91,6 +91,7 @@ bool gServerAutoTest = true;
 
 static char sFriendList[2000][ELA_MAX_ID_LEN+1] = {0};
 static int sFriendCount = 0;
+static int sFriendConnected = 0;
 
 const char* onLineMonitorFileName = "online.txt";
 
@@ -322,6 +323,21 @@ static void friend_remove(ElaCarrier *w, int argc, char *argv[])
         output("Remove friend %s failed (0x%x).\n", argv[1], ela_get_error());
 }
 
+static void friend_removeall(ElaCarrier *w, int argc, char *argv[])
+{
+    int rc, i;
+
+    for (i = 0; i < sFriendCount; i++) {
+        rc = ela_remove_friend(w, sFriendList[i]);
+        if (rc == 0)
+            output("Remove friend %s success.\n", sFriendList[i]);
+        else
+            output("Remove friend %s failed (0x%x).\n", sFriendList[i], ela_get_error());
+    }
+
+    sFriendCount = 0;
+}
+
 static int first_friends_item = 1;
 
 static const char *connection_name[] = {
@@ -348,7 +364,6 @@ static bool friends_list_callback(ElaCarrier *w, const ElaFriendInfo *friend_inf
         strcpy(sFriendList[sFriendCount], friend_info->user_info.userid);
         sFriendCount++;
     } else {
-        output("  ----------------\n");
         output("Total %d friends.\n", sFriendCount);
         first_friends_item = 1;
     }
@@ -360,13 +375,13 @@ static bool friends_list_callback(ElaCarrier *w, const ElaFriendInfo *friend_inf
  * friend list callback */
 static bool get_friends_callback(const ElaFriendInfo *friend_info, void *context)
 {
-    static int count;
+    sFriendCount = 0;
     static int online;
 
     output("ElaFriendsIterateCallback...\n");
 
     if (first_friends_item) {
-        count = 0;
+        sFriendCount = 0;
         online = 0;
         output("Friends list:\n");
         output("  %-46s %8s %s\n", "ID", "Connection", "Label");
@@ -377,13 +392,12 @@ static bool get_friends_callback(const ElaFriendInfo *friend_info, void *context
         output("  %-46s %8s %s\n", friend_info->user_info.userid,
                connection_name[friend_info->status], friend_info->label);
         first_friends_item = 0;
-        count++;
+        strcpy(sFriendList[sFriendCount], friend_info->user_info.userid);
+        sFriendCount++;
         if (ElaConnectionStatus_Connected == friend_info->status) online++;
     } else {
         /* The list ended */
-        output("  ----------------\n");
-        output("Total %d friends. online:%d\n", count, online);
-
+        output("Total %d friends. online:%d\n", sFriendCount, online);
         first_friends_item = 1;
     }
 
@@ -493,6 +507,7 @@ static void send_message2all(ElaCarrier *w, int argc, char *argv[])
 
     int i, rc, messageLen = strlen(argv[1]) + 1;
     for (i = 0; i < sFriendCount; i++) {
+        output("i = %d\n", i);
         rc = ela_send_friend_message(w, sFriendList[i], argv[1], messageLen);
         if (rc == 0)
             output("Send message success.\n");
@@ -502,7 +517,7 @@ static void send_message2all(ElaCarrier *w, int argc, char *argv[])
     gettimeofday(&messageStats.endsend_stamp, NULL);
     duration = (int)((messageStats.endsend_stamp.tv_sec - messageStats.startsend_stamp.tv_sec) * 1000000 +
                      (messageStats.endsend_stamp.tv_usec - messageStats.startsend_stamp.tv_usec)) / 1000;
-    printf("send_message end: %dms\n", duration);
+    output("send_message end: %dms\n", duration);
 }
 
 static void invite_response_callback(ElaCarrier *w, const char *friendid,
@@ -1330,6 +1345,7 @@ struct command {
     { "fadd",       friend_add,             "fadd address hello" },
     { "faccept",    friend_accept,          "faccept userid" },
     { "fremove",    friend_remove,          "fremove userid" },
+    { "fremoveall", friend_removeall,       "fremoveall" },
     { "friends",    list_friends,           "friends" },
     { "friend",     show_friend,            "friend userid" },
     { "label",      label_friend,           "label userid name" },
@@ -1481,13 +1497,15 @@ static void friend_connection_callback(ElaCarrier *w, const char *friendid,
 {
     switch (status) {
     case ElaConnectionStatus_Connected:
+        sFriendConnected++;
         gettimeofday(&friendOnline.friendOnline_stamp, NULL);
         int timeuse = 1000 * (friendOnline.friendOnline_stamp.tv_sec -friendOnline.connect2Carrier_stamp.tv_sec) + (friendOnline.friendOnline_stamp.tv_usec - friendOnline.connect2Carrier_stamp.tv_usec) / 1000;
-        outputEx("Friend[%s] connection changed to be online %d ms\n", friendid, timeuse);
+        outputEx("[%d] Friend[%s] connection changed to be online %d ms\n", sFriendConnected, friendid, timeuse);
         break;
 
     case ElaConnectionStatus_Disconnected:
-        outputEx("Friend[%s] connection changed to be offline.\n", friendid);
+        sFriendConnected--;
+        outputEx("[%d] Friend[%s] connection changed to be offline.\n", sFriendConnected, friendid);
         break;
 
     default:
