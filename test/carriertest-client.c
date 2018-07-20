@@ -146,8 +146,6 @@ static bool friends_list_callback(ElaCarrier *w, const ElaFriendInfo *friend_inf
 {
     static int count;
 
-    printf("ElaCallbacksfriend_list...\n");
-
     if (first_friends_item) {
         count = 0;
         printf("Friends list from carrier network:\n");
@@ -162,7 +160,6 @@ static bool friends_list_callback(ElaCarrier *w, const ElaFriendInfo *friend_inf
         count++;
     } else {
         /* The list ended */
-        printf("  ----------------\n");
         printf("Total %d friends.\n", count);
 
         first_friends_item = 1;
@@ -212,44 +209,18 @@ static void friend_info_callback(ElaCarrier *w, const char *friendid,
 static void friend_connection_callback(ElaCarrier *w, const char *friendid,
                                     ElaConnectionStatus status, void *context)
 {
-    printf("friend_connection_callback\n");
+    switch (status) {
+    case ElaConnectionStatus_Connected:
+        printf("+++ Friend[%s] connection changed to be online.\n", friendid);
+        break;
 
-    // switch (status) {
-    // case ElaConnectionStatus_Connected:
+    case ElaConnectionStatus_Disconnected:
+        printf("--- Friend[%s] connection changed to be offline.\n", friendid);
+        break;
 
-    //     gettimeofday(&friendOnline.end_stamp, NULL);
-    //     int timeuse = 1000 * (friendOnline.end_stamp.tv_sec -friendOnline.middle_stamp.tv_sec) + (friendOnline.end_stamp.tv_usec - friendOnline.middle_stamp.tv_usec) / 1000;
-    //     output("Friend[%s] connection changed to be online %d ms\n", friendid, timeuse);
-    //     addData(&testDataFriendOnLine, timeuse);
-    //     if (bOnlineTest) {
-    //         if (loopcount >= test_loopcnt) {
-    //             OutputData(&testDataOnLine, "testDataOnLine.txt");
-    //             OutputData(&testDataFriendOnLine, "testDataFriendOnLine.txt");
-    //             Dispose(&testDataOnLine);
-    //             Dispose(&testDataFriendOnLine);
-    //             bOnlineTest = false;
-    //         }
-    //         ela_kill(w);
-    //     }
-
-    //     if (bAddFriendTest && (0 == strcmp(friendid, testFriendId))) {
-    //         output("friend_connection_callback cond_signal\n");
-    //         cond_signal(&friendOnLine_cond);
-    //     }
-
-
-    //     //---------
-    //     // testCreateStream(w, friendid, 100);
-
-    //     break;
-
-    // case ElaConnectionStatus_Disconnected:
-    //     outputEx("Friend[%s] connection changed to be offline.\n", friendid);
-    //     break;
-
-    // default:
-    //     output("Error!!! Got unknown connection status %d.\n", status);
-    // }
+    default:
+        printf("Error!!! Got unknown connection status %d.\n", status);
+    }
 }
 
 static void friend_presence_callback(ElaCarrier *w, const char *friendid,
@@ -277,9 +248,13 @@ static void friend_request_callback(ElaCarrier *w, const char *userid,
 static void message_callback(ElaCarrier *w, const char *from,
                                     const char *msg, size_t len, void *context)
 {
-    printf("Message from friend[%s]: %.*s\n", from, (int)len, msg);
-    //parsemsg
     ela_send_friend_message(w, from, msg, len);
+
+    char timestr[20];
+    time_t cur = time(NULL);
+    strftime(timestr, 20, "%Y-%m-%d %H:%M:%S", localtime(&cur));
+    printf("[%s] Message from [%s]: %d : %s\n", timestr, from, (int)len, msg);
+    //parsemsg
 }
 
 static void invite_request_callback(ElaCarrier *w, const char *from,
