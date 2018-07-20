@@ -45,10 +45,11 @@ static char *spIndex = NULL;
 static char serverAddress[ELA_MAX_ADDRESS_LEN+1];
 static char serverUserID[ELA_MAX_ID_LEN+1];
 static bool sNeedAddServer = false;
+static bool sNeedRemoveServer = false;
 
 static bool friends_list_callback(ElaCarrier *w, const ElaFriendInfo *friend_info, void *context);
 
-void start_node(const char* app, int node_count)
+void start_node(const char* app, int node_count, bool removeserver)
 {
     char confIndex[32] = {0};
     char LD_LIBRARY_PATH[256] = {0};
@@ -56,7 +57,10 @@ void start_node(const char* app, int node_count)
     const char* psz_ld_path = getenv("LD_LIBRARY_PATH");
     sprintf(LD_LIBRARY_PATH, "LD_LIBRARY_PATH=%s", psz_ld_path);
 
-    char * const argvt[] = {app,confIndex, NULL};
+    char *pArgRemove = NULL;
+    if (removeserver) pArgRemove = "-r";
+
+    char * const argvt[] = {app,confIndex, pArgRemove, NULL};
     char * const envp[ ]={LD_LIBRARY_PATH, NULL};
 
     int i;
@@ -80,9 +84,7 @@ void log_print(const char *format, va_list args)
 //------------callback
 static void idle_callback(ElaCarrier *w, void *context)
 {
-    // char *cmd = read_cmd();
     // printf("idle_callback\n");
-    // if (cmd) do_cmd(w, cmd);
 }
 
 static void ready_callback(ElaCarrier *w, void *context)
@@ -104,6 +106,13 @@ static void connection_callback(ElaCarrier *w, ElaConnectionStatus status, void 
             int rc = ela_add_friend(w, serverAddress, "auto-reply");
             if (rc) {
                 printf("ela_add_friend error (0x%x)\n", ela_get_error());
+            }
+        }
+
+        if (sNeedRemoveServer) {
+            int rc = ela_remove_friend(w, serverUserID);
+            if (rc) {
+                printf("ela_remove_friend error (0x%x)\n", ela_get_error());
             }
         }
 
@@ -172,30 +181,6 @@ static bool friends_list_callback(ElaCarrier *w, const ElaFriendInfo *friend_inf
  * friend list callback */
 static bool get_friends_callback(const ElaFriendInfo *friend_info, void *context)
 {
-    // static int count;
-
-    // output("ElaFriendsIterateCallback...\n");
-
-    // if (first_friends_item) {
-    //     count = 0;
-    //     output("Friends list:\n");
-    //     output("  %-46s %8s %s\n", "ID", "Connection", "Label");
-    //     output("  %-46s %8s %s\n", "----------------", "----------", "-----");
-    // }
-
-    // if (friend_info) {
-    //     output("  %-46s %8s %s\n", friend_info->user_info.userid,
-    //            connection_name[friend_info->status], friend_info->label);
-    //     first_friends_item = 0;
-    //     count++;
-    // } else {
-    //     /* The list ended */
-    //     output("  ----------------\n");
-    //     output("Total %d friends.\n", count);
-
-    //     first_friends_item = 1;
-    // }
-
     return true;
 }
 
@@ -320,7 +305,14 @@ int main(int argc, char *argv[])
     ElaOptions opts;
     ElaCallbacks callbacks;
 
-    // printf("argc = %d\n", argc);
+    printf("argc = %d\n", argc);
+    if (0 == strcmp(argv[argc-1], "-r")) {
+        sNeedRemoveServer = true;
+        argc--;
+    }
+    else {
+        sNeedRemoveServer = false;
+    }
 
     TestConfig *testcfg;
     testcfg = load_test_config("carriertest.conf");
@@ -339,7 +331,7 @@ int main(int argc, char *argv[])
     if (argc < 2) {
         printf("config: node_count : %d, datadir:%s, server_address:%s\n", \
                 testcfg->node_count, testcfg->datadir, testcfg->server_address);
-        start_node(argv[0], testcfg->node_count - 1);
+        start_node(argv[0], testcfg->node_count - 1, sNeedRemoveServer);
         spIndex = "0";
     }
     else {
@@ -375,7 +367,13 @@ int main(int argc, char *argv[])
 
         bool isfriend = ela_is_friend(w, serverUserID);
         if (!isfriend) {
-            sNeedAddServer = true;
+            if (sNeedRemoveServer) {
+                sNeedRemoveServer = false;
+                sNeedAddServer = false;
+            }
+            else {
+                sNeedAddServer = true;
+            }
         }
 
         // session_init(w, 1, NULL);
